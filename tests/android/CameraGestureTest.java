@@ -41,7 +41,8 @@ public final class CameraGestureTest extends Instrumentation {
         Bundle result=new Bundle();
         try {
             prefs=getTargetContext().getSharedPreferences("cloudtown",0);
-            prefs.edit().clear().putBoolean("welcomed",true).putString("city",new GameState().encode()).commit();
+            GameState seed=new GameState();seed.peakPopulation=60;
+            prefs.edit().clear().putBoolean("welcomed",true).putString("city",seed.encode()).commit();
             Activity activity=startActivitySync(new Intent().setClassName("com.cloudtown.game","com.cloudtown.game.MainActivity")
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
             sleep(1100);tap(353,210,100); // pause simulation
@@ -69,10 +70,10 @@ public final class CameraGestureTest extends Instrumentation {
             MapCamera cam=new MapCamera();cam.restore(1.8f,(float)Math.PI/4,5,2);
             tap(200+cam.screenX(3,3,38),385.5f+cam.screenY(3,3,19)-20*cam.zoom,400);
             tap(200,664,200);
-            check(city().level(3,3)==2 && city().coins==220,"select roof and upgrade after zoom/rotation/pan");
+            check(city().level(3,3)==2 && city().coins==280,"select roof and upgrade after zoom/rotation/pan");
             tap(363,579,100); // close inspector
             tap(200+cam.screenX(2,3,38),385.5f+cam.screenY(2,3,19),400);
-            check(city().tile(2,3)==GameState.HOUSE && city().coins==130,"build on correct plot after camera gesture");
+            check(city().tile(2,3)==GameState.HOUSE && city().coins==190,"build on correct plot after camera gesture");
             sleep(800);
             Bitmap shot=getUiAutomation().takeScreenshot();
             try(FileOutputStream out=new FileOutputStream(new File(getTargetContext().getCacheDir(),"camera-preview.png"))) {
@@ -83,7 +84,7 @@ public final class CameraGestureTest extends Instrumentation {
             near(prefs.getFloat("camera_zoom",0),1,"double tap reset zoom");
             near(prefs.getFloat("camera_angle",1),0,"double tap reset rotation");
             near(prefs.getFloat("camera_x",1),0,"double tap reset pan");
-            check(city().coins==130 && city().count(GameState.HOUSE)==2,"double tap must not build");
+            check(city().coins==190 && city().count(GameState.HOUSE)==2,"double tap must not build");
             result.putString("stream","PASS: pinch zoom, twist, focal anchor, pan, gesture isolation, camera restore, rotated roof selection, upgrade and construction, double-tap reset\n");
             finish(Activity.RESULT_OK,result);
         } catch(Throwable e) {

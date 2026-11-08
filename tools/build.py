@@ -35,11 +35,12 @@ classes = build / 'test-classes'
 classes.mkdir(exist_ok=True)
 source = ROOT / 'app/src/main'
 run(jdk/'bin/javac','-encoding','UTF-8','-d',classes,
-    source/'java/com/cloudtown/game/GameState.java',source/'java/com/cloudtown/game/MapCamera.java',
-    ROOT/'tests/GameStateTest.java',ROOT/'tests/MapCameraTest.java',ROOT/'tests/ExpansionTest.java')
+    source/'java/com/cloudtown/game/GameState.java',source/'java/com/cloudtown/game/MapCamera.java',source/'java/com/cloudtown/game/DecorCatalog.java',
+    ROOT/'tests/GameStateTest.java',ROOT/'tests/MapCameraTest.java',ROOT/'tests/ExpansionTest.java',ROOT/'tests/ProgressionTest.java')
 run(jdk/'bin/java','-cp',classes,'GameStateTest')
 run(jdk/'bin/java','-cp',classes,'MapCameraTest')
 run(jdk/'bin/java','-cp',classes,'ExpansionTest')
+run(jdk/'bin/java','-cp',classes,'ProgressionTest')
 if '--test' in sys.argv: sys.exit(0)
 if not android.exists() or not bt.exists():
     raise SystemExit('Android SDK platform 35 and build-tools 35.0.0 are required; see README.md.')
@@ -55,7 +56,7 @@ manifest.write(build/'AndroidManifest.xml',encoding='utf-8',xml_declaration=True
 run(bt/'aapt2','link','-o',build/'resources.apk','-I',android,
     '--manifest',build/'AndroidManifest.xml',build/'resources.zip',
     '--java',build/'generated','--min-sdk-version','23','--target-sdk-version','35',
-    '--version-code','3','--version-name','1.2')
+    '--version-code','4','--version-name','1.3')
 sources = list((source/'java').rglob('*.java')) + list((build/'generated').rglob('*.java'))
 run(jdk/'bin/javac','-encoding','UTF-8','--release','8',
     '-classpath',android,'-d',build/'classes',*sources)

@@ -57,7 +57,9 @@ public final class GameView extends View {
     private int tileCount, cachedPlots=-1;
     private GameState cachedCity;
     private float sortedAngle=Float.NaN,sortedTileW=Float.NaN;
-    private boolean expanding;
+    private boolean expanding,decorating;
+    private int decorPage=0,selectedDecor=1,buildingPage=0,lastStage;
+    private int decorR,decorC,decorSlot,moveR=NO_SELECTION,moveC,moveSlot;
     private GameState.Plot selectedPlot;
     private boolean mapTouch, multiTouch, pinchReady;
     private float lastSpan, lastAngle, lastMidX, lastMidY;
@@ -73,7 +75,7 @@ public final class GameView extends View {
     public GameView(Context context) {
         super(context);
         prefs = context.getSharedPreferences("cloudtown", Context.MODE_PRIVATE);
-        s = GameState.decode(prefs.getString("city", null));
+        s = GameState.decode(prefs.getString("city", null));lastStage=stageCount();
         camera.setBounds(800,450);
         camera.restore(prefs.getFloat("camera_zoom",1),prefs.getFloat("camera_angle",0),
             prefs.getFloat("camera_x",0),prefs.getFloat("camera_y",0));
@@ -112,6 +114,7 @@ public final class GameView extends View {
     public void release() { if (tone != null) { tone.release(); tone=null; } }
     public boolean back() {
         if (modal != 0) { modal=0; welcomeDone(); invalidate(); return true; }
+        if(decorating) {decorating=false;moveR=NO_SELECTION;invalidate();return true;}
         if (expanding) { expanding=false;invalidate();return true; }
         if (inspectR != NO_SELECTION) { inspectR=NO_SELECTION; invalidate(); return true; }
         return false;
@@ -135,6 +138,8 @@ public final class GameView extends View {
             if (!s.paused) phase+=dt;
             if (s.advance(dt)) { save(); }
         }
+        int stage=stageCount();
+        if(stage>lastStage) {lastStage=stage;message("Новый этап: "+DecorCatalog.MILESTONES[stage-1]+" жителей! Загляните в развитие города");save();}
         toastTime-=dt;
         canvas=c; scale=getWidth()/400f;
         height=(getHeight()-insetTop-insetBottom)/scale;
@@ -185,17 +190,17 @@ public final class GameView extends View {
     private void quest() {
         round(16,124,368,64,17,0xFFFCFDF7);
         circle(42,150,14,0xFFFFE9B8); star(42,150,8,0xFFDC9C36);
-        text(s.quest>5?"Город мечты готов!":s.questTitle(),64,145,13,INK,true);
-        text(s.quest>5?"Стройте дальше в своём ритме":s.questHint(),64,161,10.5f,MUTED,false);
+        text(s.quest>=GameState.QUEST_COUNT?"Город мечты готов!":s.questTitle(),64,145,13,INK,true);
+        text(s.quest>=GameState.QUEST_COUNT?"Стройте дальше в своём ритме":s.questHint(),64,161,10.5f,MUTED,false);
         round(64,172,208,4,2,0xFFE7EDE1);
-        round(64,172,208*(s.quest>5?1:(float)s.questProgress()/s.questTarget()),4,2,0xFF83AD7B);
+        round(64,172,208*(s.quest>=GameState.QUEST_COUNT?1:(float)s.questProgress()/s.questTarget()),4,2,0xFF83AD7B);
         if(s.canClaim()) {
             round(287,136,84,39,12,GREEN); text("Забрать",302,152,11,Color.WHITE,true);
             text("+"+s.questReward()+" монет",300,166,9,0xFFD5EBDD,false);
             hit(282,129,96,52,()->{ int reward=s.claim(); message("Задание выполнено! +"+reward+" монет"); burst(330,151); sound(); save(); });
         } else {
-            text(s.quest>5?"ГОТОВО":s.questProgress()+" / "+s.questTarget(),309,148,13,GREEN,true);
-            text(s.quest>5?"♥":"+"+s.questReward()+" монет",302,166,9,MUTED,false);
+            text(s.quest>=GameState.QUEST_COUNT?"ГОТОВО":s.questProgress()+" / "+s.questTarget(),309,148,13,GREEN,true);
+            text(s.quest>=GameState.QUEST_COUNT?"♥":"+"+s.questReward()+" монет",302,166,9,MUTED,false);
         }
     }
     private void world() {
@@ -210,7 +215,7 @@ public final class GameView extends View {
         int netFood=s.foodProduction()-s.foodUse();
         text("Еда "+(netFood>=0?"+":"")+netFood+" / цикл",176,226,9,netFood>=0?GREEN:0xFFB87958,false);
         round(267,196,50,30,11,0xBFFFFFFF);
-        text("?",287,216,16,GREEN,true); hit(263,191,57,41,()->modal=1);
+        text(s.eventId>0?"!":"?",287,216,16,GREEN,true); hit(263,191,57,41,()->modal=s.eventId>0?6:1);
         round(325,196,59,30,11,0xBFFFFFFF);
         text(s.paused?"▶":"Ⅱ",336,216,15,GREEN,true);
         text(s.paused?"пуск":"пауза",352,214,8,GREEN,false);
@@ -226,7 +231,7 @@ public final class GameView extends View {
         if(expanding)for(GameState.Plot plot:s.availablePlots())plotPreview(plot);
         for(int i=0;i<tileCount;i++)islandEdge(row(drawOrder[i]),col(drawOrder[i]));
         for(int i=0;i<tileCount;i++)ground(row(drawOrder[i]),col(drawOrder[i]));
-        for(int i=0;i<tileCount;i++)decoration(row(drawOrder[i]),col(drawOrder[i]));
+        for(int i=0;i<tileCount;i++){int r=row(drawOrder[i]),c=col(drawOrder[i]);decoration(r,c);drawDecorations(r,c);}
         citizens();
         canvas.restore();
         // Gentle evening tint, one full day every four real minutes.
@@ -305,7 +310,7 @@ public final class GameView extends View {
                 line(tx(r-.4f,c+.4f),ty(r-.4f,c+.4f),tx(r+.4f,c+.4f),ty(r+.4f,c+.4f),0xFF947957,2);
             } else circle(x,y,1,0xFFD0BE94);
         }
-        if(kind==GameState.EMPTY && inspectR==NO_SELECTION && !erase && !expanding && (selected==GameState.FISH?s.nearRiver(r,c):(selected==GameState.ROAD||selected==GameState.PARK||s.nearRoad(r,c)))) {
+        if(kind==GameState.EMPTY && inspectR==NO_SELECTION && !erase && !expanding && !decorating && (selected==GameState.FISH?s.nearRiver(r,c):(selected==GameState.ROAD||selected==GameState.PARK||s.nearRoad(r,c)))) {
             tile(r,c,.05f,0x2374A44E);
             if((r*7+c)%3==0) { line(x-2,y,x+2,y,0x50658C50,1); line(x,y-2,x,y+2,0x50658C50,1); }
         }
@@ -383,6 +388,19 @@ public final class GameView extends View {
             oval(x+3,y,7,5,0xFF8AA99B);oval(x+4,y+1,4,2,0xFFD1E9D9);
             line(x-13,y-3,x-9,y-9,0x99EAEAD4,.7f);line(x-14,y-5,x-8,y-5,0x99EAEAD4,.7f);
         }
+        if(kind==GameState.GARDEN) {
+            diamond(x,y,34,17,0xFF80B97B);tree(x-9,y-2,.75f,0);tree(x+9,y-2,.8f,1);
+            oval(x-5,y-3,10,5,0xFFB5DCDC);line(x,y-3,x,y-16,0xFFBEE8DB,1.4f);
+            circle(x,y-17,2,0xFFEAF8DE);
+            for(int j=0;j<5;j++)circle(x-10+j*5,y+3,1.5f,0xFFEBA895);
+        } else if(kind==GameState.TOWN_HALL) {
+            box(x,y,14,7,28,0xFFF1DDAB,0xFFD5C591,0xFFEEE9CC);
+            poly(0xFF719E95,x-16,y-34,x,y-47,x+16,y-34,x,y-26);
+            box(x,y-26,5,3,20,0xFFFFEBC0,0xFFD9C28C,0xFFF2E7C2);
+            circle(x-2,y-39,3,0xFFF8F7DD);line(x-2,y-39,x-2,y-41,INK,.7f);
+            for(int j=0;j<3;j++)line(x-10+j*4,y-7-j*2,x-10+j*4,y-22-j*2,0xFFF9F0D1,2);
+            line(x,y-49,x,y-60,0xFF89795F,1);poly(0xFFE89479,x,y-60,x+8,y-57,x,y-54);
+        }
         if(level>1) { circle(x+13,y-3,4.5f,0xFFF7F4D8); text(Integer.toString(level),x+11,y-1,6,GREEN,true); }
     }
     private void box(float x,float y,float w,float d,float h,int left,int right,int top) {
@@ -429,12 +447,19 @@ public final class GameView extends View {
         float y=height-185;
         round(0,y,400,210,24,CREAM);round(178,y+8,44,3,2,0xFFDBE3D6);
         if(inspectR!=NO_SELECTION) {inspector(y);return;}
-        text(expanding?"Расширяем город":erase?"Навести порядок":"Построим что-нибудь?",18,y+34,17,INK,true);
-        text(expanding?"Коснитесь участка с плюсом на карте":erase?"Коснитесь здания · возврат 50% стоимости":"Выберите здание и коснитесь лужайки",18,y+51,10,MUTED,false);
+        round(12,y+19,86,32,10,!decorating&&!expanding?0xFFDFEBD5:0xFFEDF1E5);
+        textCentered(buildingPage==0?"Здания ›":"Особые ‹",55,y+40,11,GREEN,true);
+        hit(12,y+15,86,40,()->{if(!decorating&&!expanding)buildingPage=1-buildingPage;decorating=false;expanding=false;moveR=NO_SELECTION;});
+        round(104,y+19,74,32,10,decorating?0xFFDFEBD5:0xFFEDF1E5);
+        textCentered("Декор",141,y+40,11,GREEN,true);
+        hit(104,y+15,74,40,()->{decorating=true;expanding=false;erase=false;moveR=NO_SELECTION;});
+        round(184,y+19,110,32,10,0xFFEDF1E5);textCentered("Развитие",239,y+40,11,GREEN,true);
+        hit(184,y+15,110,40,()->modal=5);
+        text(expanding?"Участки 4×4 вокруг города":decorating?moveR!=NO_SELECTION?"Выберите свободный край для перестановки":"Украшения по краям клеток · не мешают зданиям":erase?"Коснитесь здания · возврат 50% стоимости":"Выберите здание и коснитесь лужайки",18,y+61,9,MUTED,false);
         round(301,y+19,82,32,10,expanding?GREEN:0xFFDFEBD5);
         textCentered(expanding?"Готово":"Земля +",342,y+40,11,expanding?Color.WHITE:GREEN,true);
         hit(297,y+15,90,40,()->{
-            expanding=!expanding;erase=false;
+            expanding=!expanding;erase=false;decorating=false;moveR=NO_SELECTION;
             if(expanding){camera.restore(.7f,camera.angle,0,0);saveCamera();}
         });
         if(expanding) {
@@ -446,6 +471,8 @@ public final class GameView extends View {
             if(s.availablePlots().isEmpty())textCentered("Все доступные земли уже куплены",200,y+163,10,GREEN,true);
             return;
         }
+        if(decorating) {decorToolbar(y);return;}
+        if(buildingPage==1) {specialToolbar(y);return;}
         String[] labels={"Домик","Ферма","Магазин","Парк","Дорога","Рыбак","Снос"};
         int[] kinds={GameState.HOUSE,GameState.FARM,GameState.SHOP,GameState.PARK,GameState.ROAD,GameState.FISH,-1};
         for(int i=0;i<7;i++) {
@@ -463,6 +490,102 @@ public final class GameView extends View {
         }
         textCentered(erase?"Дороги и река защищены от сноса":toolHint(),200,y+172,9.5f,MUTED,false);
     }
+    private int stageCount() {int n=0;for(int threshold:DecorCatalog.MILESTONES)if(s.peakPopulation>=threshold)n++;return n;}
+    private void decorToolbar(float y) {
+        for(int i=0;i<6;i++) {
+            final int kind=decorPage*6+i+1;float x=12+i*54,top=y+69;
+            boolean unlocked=s.peakPopulation>=DecorCatalog.required(kind);
+            round(x,top,49,83,12,selectedDecor==kind?0xFFDFEBD5:0xFFEDF1E5);
+            canvas.save();canvas.translate(x+24.5f,top+30);drawDecor(kind,0,0);canvas.restore();
+            textCentered(DecorCatalog.NAMES[kind],x+24.5f,top+56,8.3f,unlocked?INK:MUTED,true);
+            textCentered(unlocked?DecorCatalog.COST[kind]+" мон.":DecorCatalog.required(kind)+" жит.",x+24.5f,top+73,8.5f,unlocked?GREEN:MUTED,false);
+            hit(x,top,49,83,()->{if(s.peakPopulation<DecorCatalog.required(kind))message("Откроется при "+DecorCatalog.required(kind)+" жителях");else{selectedDecor=kind;moveR=NO_SELECTION;}});
+        }
+        round(336,y+69,49,83,12,0xFFE2EADA);textCentered("→",360,y+105,24,GREEN,true);
+        textCentered((decorPage+1)+" / 3",360,y+136,10,MUTED,true);
+        hit(336,y+69,49,83,()->decorPage=(decorPage+1)%3);
+        textCentered(moveR!=NO_SELECTION?"Перестановка бесплатна · «Здания» отменяет перенос":s.peakPopulation<24?"Первый декор откроется на 24 жителях":"Коснитесь украшения, чтобы переставить или убрать",200,y+172,9,MUTED,false);
+    }
+    private void specialToolbar(float y) {
+        int[] kinds={GameState.GARDEN,GameState.TOWN_HALL};
+        for(int i=0;i<2;i++) {
+            final int kind=kinds[i];int threshold=kind==GameState.GARDEN?480:800;float x=16+i*186,top=y+69;
+            boolean unlocked=s.peakPopulation>=threshold;
+            round(x,top,180,83,14,selected==kind?0xFFDFEBD5:0xFFEDF1E5);
+            canvas.save();canvas.translate(x+33,top+51);canvas.scale(.7f,.7f);building(kind,0,0,1);canvas.restore();
+            text(GameState.NAMES[kind],x+59,top+30,12,INK,true);
+            text(unlocked?GameState.COST[kind]+" монет":threshold+" жителей",x+59,top+51,11,unlocked?GREEN:MUTED,false);
+            hit(x,top,180,83,()->{if(!unlocked)message("Откроется при "+threshold+" жителях");else{selected=kind;erase=false;}});
+        }
+        textCentered("Особые постройки · по одной на город · нужна дорога",200,y+172,9,MUTED,false);
+    }
+    private void drawDecorations(int r,int c) {
+        if(s.tile(r,c)==GameState.WATER)return;
+        for(int slot=0;slot<4;slot++) {
+            float x=tx(r+NEIGHBOR_R[slot]*.38f,c+NEIGHBOR_C[slot]*.38f);
+            float y=ty(r+NEIGHBOR_R[slot]*.38f,c+NEIGHBOR_C[slot]*.38f);
+            int kind=s.decor(r,c,slot);
+            if(kind!=0) {canvas.save();canvas.translate(x,y);canvas.scale(tileW/38*.7f,tileW/38*.7f);drawDecor(kind,0,0);canvas.restore();}
+            else if(decorating)circle(x,y,1.1f,0x667C9D70);
+        }
+    }
+    private void drawDecor(int kind,float x,float y) {
+        if(kind==1||kind==8||kind==9) {
+            if(kind!=1)box(x,y,7,3,4,0xFFC29E77,0xFFA98461,0xFFDBC09B);
+            for(int i=0;i<3;i++){float xx=x-5+i*5;line(xx,y-2,xx,y-8,0xFF729862,1);circle(xx,y-9,2.6f,i%2==0?0xFFECA28B:0xFFE9CE72);circle(xx,y-9,1,0xFFFFE8A0);}
+        } else if(kind==2) {oval(x-9,y-11,18,12,0xFF80B37B);circle(x-2,y-11,6,0xFFA4C98D);}
+        else if(kind==3) {oval(x-9,y-5,10,6,0xFFADBCAD);oval(x,y-8,9,8,0xFFCBD0B9);}
+        else if(kind==4) {line(x-8,y-4,x+7,y+2,0xFFAC885B,3);line(x-8,y-8,x+7,y-2,0xFFBD9A69,2);line(x-5,y-2,x-5,y+3,INK,1);line(x+5,y+1,x+5,y+5,INK,1);}
+        else if(kind==5) {line(x,y,x,y-23,0xFF758D7A,1.8f);line(x-4,y-23,x+4,y-23,0xFF758D7A,2);circle(x,y-20,4,0xFFF4DE8B);circle(x,y-20,2,0xFFFFF0B5);}
+        else if(kind==6) {line(x,y,x,y-19,0xFFA58B66,2);poly(0xFFE0C99C,x-7,y-19,x+5,y-19,x+9,y-16,x+5,y-13,x-7,y-13);}
+        else if(kind==7) {for(int i=-1;i<=1;i++)line(x+i*7,y+i*2,x+i*7,y-13+i*2,0xFFD9C49A,2);line(x-8,y-8,x+8,y-4,0xFFB6A17F,2);}
+        else if(kind==10) {diamond(x,y,22,10,0xFFDCCBA4);for(int i=0;i<3;i++)oval(x-7+i*5,y-2,4,2,0xFFF1E7CA);}
+        else if(kind==11||kind==16) {box(x,y,6,3,5,0xFFC1C5AE,0xFF9BA78D,0xFFE2E4CD);line(x,y-7,x,y-18,0xFFBFC7AE,5);circle(x,y-21,4,kind==16?GOLD:0xFFD7DCC4);}
+        else if(kind==12) {line(x-8,y,x-8,y-17,0xFFB19B73,1);line(x+8,y+2,x+8,y-15,0xFFB19B73,1);poly(0xFFEBA790,x-11,y-18,x,y-23,x+11,y-16,x,y-12);}
+        else if(kind==13) {oval(x-11,y-5,22,10,0xFFBDCAB2);oval(x-8,y-4,16,7,0xFF8CCAC9);line(x,y-2,x,y-17,0xFFB5E4D8,1.5f);circle(x,y-17,2,0xFFD7F4DE);}
+        else if(kind==14) {line(x-11,y,x-11,y-18,0xFFA68D6C,1);line(x+11,y+2,x+11,y-16,0xFFA68D6C,1);line(x-11,y-18,x,y-14,0xFF82967A,.7f);line(x,y-14,x+11,y-16,0xFF82967A,.7f);for(int i=0;i<5;i++)circle(x-10+i*5,y-16+(i%2)*2,1.7f,i%2==0?GOLD:0xFFE9A68C);}
+        else if(kind==15) {tree(x,y,.9f,2);for(int i=0;i<4;i++)circle(x-3+i%2*6,y-10-i*3,1.2f,i%2==0?GOLD:0xFFE9A28B);}
+        else if(kind==17) {line(x-9,y,x-9,y-17,0xFFB9C3A7,3);line(x+9,y+2,x+9,y-15,0xFFB9C3A7,3);p.setColor(0xFFD7DABD);p.setStyle(Paint.Style.STROKE);p.setStrokeWidth(3);canvas.drawArc(new RectF(x-9,y-26,x+9,y-8),180,180,false,p);p.setStyle(Paint.Style.FILL);}
+        else if(kind==18) {line(x,y,x,y-26,0xFF91A188,1.5f);poly(0xFFEAA88E,x,y-26,x+13,y-22,x,y-17);}
+    }
+    private void extraDialog(float top,float h) {
+        if(modal==5) {
+            text("Развитие города",42,top+35,22,INK,true);
+            text("Жителей сейчас: "+s.population()+" · рекорд: "+s.peakPopulation,42,top+57,11,MUTED,false);
+            String[] names={"Первые украшения","Уровень 2 и фонари","События и цветочные ящики","Уровень 3 и скульптуры","Большой сад и фонтаны","Ратуша и памятник"};
+            for(int i=0;i<6;i++) {
+                int threshold=DecorCatalog.MILESTONES[i];float y=top+78+i*51;
+                boolean open=s.peakPopulation>=threshold;
+                round(42,y,316,43,12,open?0xFFE2EDD9:0xFFEDF0E6);
+                text(Integer.toString(threshold),55,y+27,16,open?GREEN:MUTED,true);
+                text(names[i],108,y+26,11,open?INK:MUTED,false);
+            }
+            textCentered(s.legacyLevel>1?"Улучшения из старого города сохранены":"Открытые возможности остаются навсегда",200,top+403,10,MUTED,false);
+            round(42,top+421,316,42,13,GREEN);textCentered("Вернуться в город",200,top+448,13,Color.WHITE,true);
+            hit(42,top+421,316,42,()->modal=0);
+        } else if(modal==6) {
+            textCentered(s.eventTitle(),200,top+42,19,INK,true);
+            wrapped(s.eventDescription(),42,top+72,316,12,MUTED,18);
+            for(int i=0;i<2;i++) {
+                final int choice=i;float y=top+132+i*65;
+                round(42,y,316,51,13,i==0?GREEN:0xFFE3EBD7);
+                textCentered(s.eventChoice(i),200,y+31,11.5f,i==0?Color.WHITE:GREEN,true);
+                hit(42,y,316,51,()->{String error=s.resolveEvent(choice);if(error!=null){modal=0;message(error);}else{modal=0;save();sound();message("Спасибо! Город стал немного уютнее");}});
+            }
+            textCentered("Событие ждёт вашего решения",200,top+278,10,MUTED,false);
+            hit(42,top+292,316,40,()->modal=0);textCentered("Решить позже",200,top+318,13,GREEN,true);
+        } else if(modal==8) {
+            int kind=s.decor(decorR,decorC,decorSlot);
+            if(kind==0){modal=0;return;}
+            textCentered(DecorCatalog.NAMES[kind],200,top+42,22,INK,true);
+            textCentered("Украшение не занимает место здания",200,top+70,11,MUTED,false);
+            round(42,top+93,316,46,13,GREEN);textCentered("Переставить бесплатно",200,top+122,13,Color.WHITE,true);
+            hit(42,top+93,316,46,()->{moveR=decorR;moveC=decorC;moveSlot=decorSlot;modal=0;});
+            round(42,top+151,316,46,13,0xFFE7ECD9);textCentered("Убрать · вернуть "+DecorCatalog.COST[kind]/2+" монет",200,top+180,12,GREEN,true);
+            hit(42,top+151,316,46,()->{s.removeDecor(decorR,decorC,decorSlot);save();modal=0;});
+            hit(42,top+213,316,42,()->modal=0);textCentered("Оставить на месте",200,top+239,13,MUTED,false);
+        }
+    }
     private String toolHint() {
         switch(selected) {
             case 1:return "+4 жителя · +5 монет · −1 еда за цикл";
@@ -477,15 +600,16 @@ public final class GameView extends View {
         int kind=s.tile(inspectR,inspectC), level=s.level(inspectR,inspectC);
         canvas.save(); canvas.translate(48,y+70); building(kind,0,0,level); canvas.restore();
         text(GameState.NAMES[kind],80,y+39,20,INK,true);
-        text("УРОВЕНЬ "+level+" ИЗ 3",81,y+57,9,GREEN,true);
-        String detail=kind==1?(level*4)+" жителя · +"+(level*5)+" монет за цикл":(kind==2||kind==GameState.FISH)?"Еда: +"+(level*4)+" еды за цикл":kind==3?"Выручка: +"+(level*9)+" монет за цикл":"Настроение: +"+(level*9);
+        text("УРОВЕНЬ "+level+" ИЗ "+s.buildingMax(kind),81,y+57,9,GREEN,true);
+        String detail=kind==1?(level*4)+" жителя · +"+(level*5)+" монет за цикл":(kind==2||kind==GameState.FISH)?"Еда: +"+(level*4)+" еды за цикл":kind==3?"Выручка: +"+(level*9)+" монет за цикл":kind==GameState.TOWN_HALL?"Выручка: +40 монет за цикл":"Настроение: +"+(kind==GameState.GARDEN?12:level*9);
         text(detail,81,y+76,10.5f,MUTED,false);
         round(343,y+20,40,40,12,0xFFE7EDDF); text("×",356,y+47,23,MUTED,false);
         hit(339,y+14,49,49,()->inspectR=NO_SELECTION);
-        if(level<3) {
+        if(level<s.buildingMax(kind)) {
+            String lock=s.upgradeLock(inspectR,inspectC);
             int cost=s.upgradeCost(inspectR,inspectC);
-            round(18,y+95,364,48,14,s.coins>=cost?GREEN:0xFF9EAEA0);
-            textCentered("Улучшить · "+cost+" монет",200,y+125,14,Color.WHITE,true);
+            round(18,y+95,364,48,14,s.coins>=cost&&lock==null?GREEN:0xFF9EAEA0);
+            textCentered(lock==null?"Улучшить · "+cost+" монет":lock,200,y+125,14,Color.WHITE,true);
             hit(18,y+95,364,48,()->{String error=s.upgrade(inspectR,inspectC); if(error!=null)message(error);else{sound();burstTile(inspectR,inspectC);save();}});
         } else {
             round(18,y+95,364,48,14,0xFFE3EBD8); textCentered("Красота! Максимальный уровень",200,y+125,13,GREEN,true);
@@ -496,8 +620,9 @@ public final class GameView extends View {
         // Remove all underlying controls from input routing.
         hits.clear();
         p.setColor(0x99304E48); canvas.drawRect(0,0,400,height,p);
-        float h=modal==1?435:modal==2?358:modal==4?286:235, top=(height-h)/2;
+        float h=modal==5?480:modal==6?350:modal==8?286:modal==1?435:modal==2?358:modal==4?286:235, top=(height-h)/2;
         round(20,top,360,h,25,CREAM);
+        if(modal>=5) {extraDialog(top,h);return;}
         if(modal==1) {
             circle(200,top+57,31,0xFFDEECD5);
             building(1,200,top+75,1); tree(220,top+75,.6f,0);
@@ -529,7 +654,7 @@ public final class GameView extends View {
             textCentered("Текущий город будет удалён.",200,top+77,12,MUTED,false);
             textCentered("Это действие нельзя отменить.",200,top+98,12,MUTED,false);
             round(42,top+123,316,44,13,0xFFB87860); textCentered("Да, новый город",200,top+151,14,Color.WHITE,true);
-            hit(42,top+123,316,44,()->{boolean sound=s.sound;s=new GameState();s.sound=sound;inspectR=NO_SELECTION;erase=false;selected=1;phase=0;particles.clear();expanding=false;camera.reset();saveCamera();save();modal=0;message("Новый остров ждёт ваших идей");});
+            hit(42,top+123,316,44,()->{boolean sound=s.sound;s=new GameState();s.sound=sound;inspectR=NO_SELECTION;erase=false;selected=1;phase=0;particles.clear();expanding=false;decorating=false;moveR=NO_SELECTION;lastStage=0;buildingPage=0;camera.reset();saveCamera();save();modal=0;message("Новый остров ждёт ваших идей");});
             round(42,top+178,316,37,12,0xFFE5EBDD); textCentered("Оставить мой город",200,top+202,13,GREEN,true);
             hit(42,top+178,316,37,()->modal=2);
         } else if(selectedPlot!=null) {
@@ -555,11 +680,24 @@ public final class GameView extends View {
     }
     private void mapTap(float x,float y) {
         float screenX=x,screenY=y,centerY=originY+4*tileH;
-        int c=Math.round(camera.column(x-200,y-centerY,tileW,tileH));
-        int r=Math.round(camera.row(x-200,y-centerY,tileW,tileH));
+        float gridC=camera.column(x-200,y-centerY,tileW,tileH),gridR=camera.row(x-200,y-centerY,tileW,tileH);
+        int c=Math.round(gridC),r=Math.round(gridR);
         if(expanding) {
             for(GameState.Plot plot:s.availablePlots())if(plot.contains(r,c)) {selectedPlot=plot;modal=4;return;}
             message("Выберите участок 4×4 с плюсом у края города");return;
+        }
+        if(decorating) {
+            float dr=gridR-r,dc=gridC-c;
+            int slot=Math.abs(dr)>=Math.abs(dc)?(dr<0?0:2):(dc>0?1:3);
+            if(moveR!=NO_SELECTION) {
+                String error=s.moveDecor(moveR,moveC,moveSlot,r,c,slot);
+                if(error!=null)message(error);else{moveR=NO_SELECTION;save();sound();}
+            } else if(s.decor(r,c,slot)!=0) {decorR=r;decorC=c;decorSlot=slot;modal=8;}
+            else {
+                String error=s.placeDecor(r,c,slot,selectedDecor);
+                if(error!=null)message(error);else{sound();save();burstTile(r,c);}
+            }
+            return;
         }
         x=200+(x-200-camera.panX)/camera.zoom;
         y=centerY+(y-centerY-camera.panY)/camera.zoom;
@@ -569,7 +707,7 @@ public final class GameView extends View {
         for(int i=tileCount-1;i>=0 && !found;i--) {
             int rr=row(drawOrder[i]),cc=col(drawOrder[i]);
             int k=s.tile(rr,cc); if(!GameState.isBuilding(k))continue;
-            float unit=tileW/38, tall=(k==1?32+(s.level(rr,cc)-1)*10:k==3?39+(s.level(rr,cc)-1)*8:k==GameState.FISH?29+(s.level(rr,cc)-1)*5:34)*unit;
+            float unit=tileW/38, tall=(k==1?32+(s.level(rr,cc)-1)*10:k==3?39+(s.level(rr,cc)-1)*8:k==GameState.FISH?29+(s.level(rr,cc)-1)*5:k==GameState.TOWN_HALL?60:34)*unit;
             if(x>=tx(rr,cc)-14*unit && x<=tx(rr,cc)+14*unit && y>=ty(rr,cc)-tall && y<=ty(rr,cc)+3*unit) {
                 r=rr;c=cc;found=true;break;
             }

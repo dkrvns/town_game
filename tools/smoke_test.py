@@ -31,10 +31,10 @@ def state():
     time.sleep(.4)
     tree=ET.fromstring(adb('shell','cat','/data/user/0/com.cloudtown.game/shared_prefs/cloudtown.xml'))
     raw=tree.find("string[@name='city']").text.split(';')
-    if raw[0]=='2':
+    if raw[0] in ('2','3'):
         cells={}
         for cell in raw[8+int(raw[7]):]:
-            if not cell: continue
+            if not cell or cell.startswith(('P,','D,')): continue
             r,c,kind,level=cell.split(',');cells[(int(r),int(c))]=kind+','+level
         tiles=[cells[(r,c)] for r in range(9) for c in range(9)]
     else:
@@ -52,15 +52,15 @@ assert before['coins']==220,before
 tap(330,155) # quest claim
 assert state()['quest']==1
 tap(181,337,delay=.4) # allow single tap to resolve before pressing the inspector's button
-tap(200,664) # upgrade
+tap(200,664) # locked upgrade before 60 residents
 upgraded=state()
-assert upgraded['tiles'][3*9+2]=='1,2',upgraded
-assert upgraded['coins']==140,upgraded
+assert upgraded['tiles'][3*9+2]=='1,1',upgraded
+assert upgraded['coins']==320,upgraded
 tap(363,579) # inspector close
 adb('shell','am','force-stop','com.cloudtown.game');launch()
 restored=state()
-assert restored['tiles']==upgraded['tiles'] and restored['quest']==1 and restored['coins']==140,restored
+assert restored['tiles']==upgraded['tiles'] and restored['quest']==1 and restored['coins']==320,restored
 (ROOT/'dist/screenshot.png').write_bytes(adb('exec-out','screencap','-p',binary=True))
 errors=adb('logcat','-d','-s','AndroidRuntime:E')
 assert 'FATAL EXCEPTION' not in errors,errors
-print('PASS: offline launch, touch construction, pause, reward, roof selection, upgrade, persistence, no Android crashes')
+print('PASS: offline launch, touch construction, pause, reward, roof selection, locked upgrade, persistence, no Android crashes')

@@ -24,7 +24,7 @@ public final class ExpansionTest {
         check(s.build(7,1,GameState.FISH)!=null,"hut cannot occupy water");
         check(!s.nearRoad(6,1)&&s.build(6,1,GameState.FISH)==null,"shore hut does not need road");
         check(s.coins==280&&s.foodProduction()==production+4,"same cost and food as farm");
-        s.coins=5000;check(s.upgrade(6,1)==null&&s.foodProduction()==production+8,"upgraded fishing output");
+        s.coins=5000;s.legacyLevel=3;check(s.upgrade(6,1)==null&&s.foodProduction()==production+8,"upgraded fishing output");
         check(s.upgrade(6,1)==null&&s.foodProduction()==production+12,"level three fishing output");
         check(s.upgrade(6,1)!=null,"fishing max level");
         check(GameState.decode(s.encode()).level(6,1)==3,"fishing save");
@@ -34,7 +34,7 @@ public final class ExpansionTest {
         int food=s.food;for(int i=0;i<10;i++)s.advance(1);
         check(s.food==food+s.foodProduction()-s.foodUse(),"fishing contributes each economic cycle");
         // A real version-1 payload, with non-default funds, progress and an improved house.
-        GameState old=new GameState();old.coins=4444;old.upgrade(3,3);
+        GameState old=new GameState();old.coins=4444;old.legacyLevel=3;old.upgrade(3,3);
         StringBuilder legacy=new StringBuilder("1;").append(old.coins).append(";73;17;2;4.5;0;");
         for(int r=0;r<9;r++)for(int c=0;c<9;c++)legacy.append(old.tile(r,c)).append(',').append(old.level(r,c)).append(';');
         GameState migrated=GameState.decode(legacy.toString());

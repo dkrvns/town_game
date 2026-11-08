@@ -3,4 +3,5 @@
     <application android:label="CloudTown gesture tests" />
     <instrumentation android:name="com.cloudtown.game.tests.CameraGestureTest" android:targetPackage="com.cloudtown.game" />
     <instrumentation android:name="com.cloudtown.game.tests.ExpansionUiTest" android:targetPackage="com.cloudtown.game" />
+    <instrumentation android:name="com.cloudtown.game.tests.ProgressionUiTest" android:targetPackage="com.cloudtown.game" />
 </manifest>
