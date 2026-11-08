@@ -35,8 +35,10 @@ classes = build / 'test-classes'
 classes.mkdir(exist_ok=True)
 source = ROOT / 'app/src/main'
 run(jdk/'bin/javac','-encoding','UTF-8','-d',classes,
-    source/'java/com/cloudtown/game/GameState.java',ROOT/'tests/GameStateTest.java')
+    source/'java/com/cloudtown/game/GameState.java',source/'java/com/cloudtown/game/MapCamera.java',
+    ROOT/'tests/GameStateTest.java',ROOT/'tests/MapCameraTest.java')
 run(jdk/'bin/java','-cp',classes,'GameStateTest')
+run(jdk/'bin/java','-cp',classes,'MapCameraTest')
 if '--test' in sys.argv: sys.exit(0)
 if not android.exists() or not bt.exists():
     raise SystemExit('Android SDK platform 35 and build-tools 35.0.0 are required; see README.md.')
@@ -52,7 +54,7 @@ manifest.write(build/'AndroidManifest.xml',encoding='utf-8',xml_declaration=True
 run(bt/'aapt2','link','-o',build/'resources.apk','-I',android,
     '--manifest',build/'AndroidManifest.xml',build/'resources.zip',
     '--java',build/'generated','--min-sdk-version','23','--target-sdk-version','35',
-    '--version-code','1','--version-name','1.0')
+    '--version-code','2','--version-name','1.1')
 sources = list((source/'java').rglob('*.java')) + list((build/'generated').rglob('*.java'))
 run(jdk/'bin/javac','-encoding','UTF-8','--release','8',
     '-classpath',android,'-d',build/'classes',*sources)
@@ -74,3 +76,21 @@ run(jdk/'bin/java','-jar',bt/'lib/apksigner.jar','sign','--ks',key,
     '--ks-pass','pass:android','--key-pass','pass:android','--out',output,build/'aligned.apk')
 run(jdk/'bin/java','-jar',bt/'lib/apksigner.jar','verify','--verbose',output)
 print(f'APK ready: {output} ({output.stat().st_size / 1024:.0f} KB)')
+if '--ui-tests' in sys.argv:
+    test_dir=build/'android-tests'
+    test_dir.mkdir(exist_ok=True)
+    test_classes=test_dir/'classes';test_classes.mkdir(exist_ok=True)
+    test_dex=test_dir/'dex';test_dex.mkdir(exist_ok=True)
+    run(jdk/'bin/javac','-encoding','UTF-8','--release','8',
+        '-classpath',os.pathsep.join(map(str,[android,build/'classes'])),'-d',test_classes,
+        ROOT/'tests/android/CameraGestureTest.java')
+    run(jdk/'bin/java','-cp',bt/'lib/d8.jar','com.android.tools.r8.D8',
+        '--lib',android,'--classpath',build/'classes','--min-api','23','--output',test_dex,
+        *test_classes.rglob('*.class'))
+    run(bt/'aapt2','link','-o',test_dir/'unsigned.apk','-I',android,
+        '--manifest',ROOT/'tests/android/AndroidManifest.xml')
+    with zipfile.ZipFile(test_dir/'unsigned.apk','a',zipfile.ZIP_DEFLATED) as apk:
+        apk.write(test_dex/'classes.dex','classes.dex')
+    run(bt/'zipalign','-f','4',test_dir/'unsigned.apk',test_dir/'aligned.apk')
+    run(jdk/'bin/java','-jar',bt/'lib/apksigner.jar','sign','--ks',key,
+        '--ks-pass','pass:android','--key-pass','pass:android','--out',test_dir/'CameraTests.apk',test_dir/'aligned.apk')

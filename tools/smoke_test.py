@@ -25,14 +25,15 @@ adb('logcat','-c')
 adb('shell','svc','wifi','disable');adb('shell','svc','data','disable')
 def launch():
     adb('shell','am','start','-W','-n','com.cloudtown.game/.MainActivity');time.sleep(1.2)
-def tap(x,y):
-    adb('shell','input','tap',str(round(x*2.7)),str(round(63+y*2.7)));time.sleep(.25)
+def tap(x,y,delay=.25):
+    adb('shell','input','tap',str(round(x*2.7)),str(round(63+y*2.7)));time.sleep(delay)
 def state():
     time.sleep(.4)
     tree=ET.fromstring(adb('shell','cat','/data/user/0/com.cloudtown.game/shared_prefs/cloudtown.xml'))
     raw=tree.find("string[@name='city']").text.split(';')
     return {'coins':int(raw[1]),'quest':int(raw[4]),'tiles':raw[7:88]}
 launch()
+(ROOT/'dist/first-launch.png').write_bytes(adb('exec-out','screencap','-p',binary=True))
 tap(200,515) # welcome
 tap(353,210) # pause for deterministic accounting
 tap(181,357) # house (3,2)
@@ -42,7 +43,7 @@ assert before['tiles'][3*9+2]=='1,1' and before['tiles'][5*9+2]=='1,1',before
 assert before['coins']==220,before
 tap(330,155) # quest claim
 assert state()['quest']==1
-tap(181,337) # tap the visible roof, not just the plot
+tap(181,337,delay=.4) # allow single tap to resolve before pressing the inspector's button
 tap(200,664) # upgrade
 upgraded=state()
 assert upgraded['tiles'][3*9+2]=='1,2',upgraded

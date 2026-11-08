@@ -15,6 +15,7 @@ import android.media.ToneGenerator;
 import android.os.Build;
 import android.os.SystemClock;
 import android.view.HapticFeedbackConstants;
+import android.view.GestureDetector;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowInsets;
@@ -47,6 +48,13 @@ public final class GameView extends View {
     private final ArrayList<Particle> particles = new ArrayList<>();
     private final Random random = new Random(41);
     private float touchX, touchY;
+    private final MapCamera camera = new MapCamera();
+    private final GestureDetector taps;
+    private final int[] drawOrder = new int[81];
+    private boolean mapTouch, multiTouch, pinchReady;
+    private float lastSpan, lastAngle, lastMidX, lastMidY;
+    private Runnable pendingTap;
+    private float pendingX,pendingY;
     private static final class Hit {
         RectF area; Runnable action;
         Hit(float x, float y, float w, float h, Runnable action) { area = new RectF(x,y,x+w,y+h); this.action=action; }
@@ -58,6 +66,21 @@ public final class GameView extends View {
         super(context);
         prefs = context.getSharedPreferences("cloudtown", Context.MODE_PRIVATE);
         s = GameState.decode(prefs.getString("city", null));
+        camera.restore(prefs.getFloat("camera_zoom",1),prefs.getFloat("camera_angle",0),
+            prefs.getFloat("camera_x",0),prefs.getFloat("camera_y",0));
+        taps = new GestureDetector(context,new GestureDetector.SimpleOnGestureListener() {
+            @Override public boolean onDown(MotionEvent e) { return true; }
+            @Override public boolean onSingleTapUp(MotionEvent e) {
+                queueMapTap(e.getX()/scale,(e.getY()-insetTop)/scale);
+                return true;
+            }
+            @Override public boolean onScroll(MotionEvent a,MotionEvent b,float dx,float dy) {
+                cancelMapTap();
+                camera.pan(-dx/scale,-dy/scale);invalidate();return true;
+            }
+        });
+        taps.setOnDoubleTapListener(null);
+        taps.setIsLongpressEnabled(false);
         modal = prefs.getBoolean("welcomed", false) ? 0 : 1;
         setFocusable(true);
         setContentDescription("Облачный городок. Стройте здания касанием участков на острове.");
@@ -71,7 +94,11 @@ public final class GameView extends View {
         return insets;
     }
     public void save() { prefs.edit().putString("city",s.encode()).apply(); }
-    public void suspend() { suspended = true; lastFrame=0; save(); }
+    private void saveCamera() {
+        prefs.edit().putFloat("camera_zoom",camera.zoom).putFloat("camera_angle",camera.angle)
+            .putFloat("camera_x",camera.panX).putFloat("camera_y",camera.panY).apply();
+    }
+    public void suspend() { suspended = true; lastFrame=0;cancelMapTap();save();saveCamera(); }
     public void resume() { suspended = false; lastFrame=0; invalidate(); }
     public void release() { if (tone != null) { tone.release(); tone=null; } }
     public boolean back() {
@@ -164,8 +191,9 @@ public final class GameView extends View {
     private void world() {
         float top=225, bottom=height-205;
         float available=Math.max(130,bottom-top);
-        tileW=Math.min(38,(available-8)/5.6f); tileH=tileW/2;
+        tileW=Math.min(38,Math.max(12,(height-495)*2/9)); tileH=tileW/2;
         originY=top+(available-9*tileH-40)/2+40;
+        originY=Math.min(originY,height-240-8.5f*tileH);
         text("ДЕНЬ "+(s.ticks/24+1),19,211,9,MUTED,true);
         text("+"+s.income()+" монет / 10 сек",19,226,10,GREEN,true);
         text("Уют "+s.happiness()+"%",176,211,9,MUTED,true);
@@ -177,38 +205,55 @@ public final class GameView extends View {
         text(s.paused?"▶":"Ⅱ",336,216,15,GREEN,true);
         text(s.paused?"пуск":"пауза",352,214,8,GREEN,false);
         hit(321,191,67,41,()->{s.paused=!s.paused; save();});
+        canvas.save();
+        canvas.clipRect(0,233,400,height-222);
+        canvas.translate(200+camera.panX,originY+4*tileH+camera.panY);
+        canvas.scale(camera.zoom,camera.zoom);
+        canvas.translate(-200,-originY-4*tileH);
         float half=GameState.SIZE*tileW/2, mid=originY+4*tileH;
         oval(200-half-10,mid+tileH*3.3f,half*2+20,tileH*4,0x207A9D8E);
-        poly(0xFF89AF8C,200-half,mid,200,originY+8.5f*tileH,200,originY+8.5f*tileH+17,200-half,mid+17);
-        poly(0xFF689680,200+half,mid,200,originY+8.5f*tileH,200,originY+8.5f*tileH+17,200+half,mid+17);
-        for(int depth=0;depth<=16;depth++) for(int r=0;r<9;r++) {
-            int col=depth-r; if(col<0||col>=9) continue;
-            ground(r,col);
+        float[] rs={-.5f,-.5f,8.5f,8.5f},cs={-.5f,8.5f,8.5f,-.5f};
+        for(int i=0;i<4;i++) {
+            int j=(i+1)%4;
+            float x=tx(rs[i],cs[i]),y=ty(rs[i],cs[i]),xx=tx(rs[j],cs[j]),yy=ty(rs[j],cs[j]);
+            poly((x+xx)/2<200?0xFF89AF8C:0xFF689680,x,y,xx,yy,xx,yy+17,x,y+17);
         }
-        for(int depth=0;depth<=16;depth++) for(int r=0;r<9;r++) {
-            int col=depth-r; if(col<0||col>=9) continue;
-            decoration(r,col);
-        }
+        sortTiles();
+        for(int cell:drawOrder) ground(cell/9,cell%9);
+        for(int cell:drawOrder) decoration(cell/9,cell%9);
         citizens();
+        canvas.restore();
         // Gentle evening tint, one full day every four real minutes.
         float night=(float)Math.max(0,Math.sin((s.ticks*10+s.elapsed)/240*Math.PI*2-Math.PI/2));
         if(night>0) { p.setColor(Color.argb((int)(night*32),36,65,107)); canvas.drawRect(0,232,400,height-200,p); }
         float labelY=height-205;
         if (s.paused) textCentered("Город отдыхает • нажмите «пуск»",200,labelY,11,MUTED,false);
         else {
-            textCentered("БЕЗ ИНТЕРНЕТА · БЕЗ СПЕШКИ",200,labelY,8.5f,MUTED,true);
+            textCentered("2 пальца: масштаб и поворот · 2 тапа: сброс",200,labelY,9,MUTED,false);
             round(135,labelY+8,130,3,2,0x60FFFFFF);
             round(135,labelY+8,130*s.elapsed/10,3,2,0xFF6AA68B);
         }
     }
-    private float tx(int r,int c) { return 200+(c-r)*tileW/2; }
-    private float ty(int r,int c) { return originY+(c+r)*tileH/2; }
+    private float tx(float r,float c) { return 200+camera.x(r,c,tileW); }
+    private float ty(float r,float c) { return originY+4*tileH+camera.y(r,c,tileH); }
+    private void sortTiles() {
+        for(int i=0;i<81;i++) {
+            int j=i;float depth=ty(i/9,i%9);
+            while(j>0 && ty(drawOrder[j-1]/9,drawOrder[j-1]%9)>depth) { drawOrder[j]=drawOrder[j-1];j--; }
+            drawOrder[j]=i;
+        }
+    }
+    private void tile(float r,float c,float inset,int color) {
+        float d=.5f-inset;
+        poly(color,tx(r-d,c-d),ty(r-d,c-d),tx(r-d,c+d),ty(r-d,c+d),
+            tx(r+d,c+d),ty(r+d,c+d),tx(r+d,c-d),ty(r+d,c-d));
+    }
     private void diamond(float x,float y,float w,float h,int color) { poly(color,x,y-h/2,x+w/2,y,x,y+h/2,x-w/2,y); }
     private void ground(int r,int c) {
         float x=tx(r,c), y=ty(r,c);
         int kind=s.tiles[r][c];
         int grass=(r+c)%2==0?0xFFA7CC83:0xFFA0C67C;
-        diamond(x,y,tileW+0.6f,tileH+0.4f,kind==GameState.WATER?0xFF79C8C8:kind==GameState.ROAD?0xFFE1D4AB:grass);
+        tile(r,c,-.008f,kind==GameState.WATER?0xFF79C8C8:kind==GameState.ROAD?0xFFE1D4AB:grass);
         if(kind==GameState.WATER) {
             float offset=(float)Math.sin(phase*1.8f+c)*2;
             line(x-7+offset,y,x+3+offset,y-1,0x99D8F8E8,1);
@@ -216,16 +261,16 @@ public final class GameView extends View {
         }
         if(kind==GameState.ROAD) {
             if(r==7) {
-                diamond(x,y,tileW,tileH,0xFFC8AC86);
-                line(x-tileW*.4f,y+1,x,y+tileH*.4f,0xFF947957,2);
-                line(x,y-tileH*.4f,x+tileW*.4f,y-1,0xFF947957,2);
+                tile(r,c,0,0xFFC8AC86);
+                line(tx(r-.4f,c-.4f),ty(r-.4f,c-.4f),tx(r+.4f,c-.4f),ty(r+.4f,c-.4f),0xFF947957,2);
+                line(tx(r-.4f,c+.4f),ty(r-.4f,c+.4f),tx(r+.4f,c+.4f),ty(r+.4f,c+.4f),0xFF947957,2);
             } else circle(x,y,1,0xFFD0BE94);
         }
         if(kind==GameState.EMPTY && inspectR<0 && !erase && (selected==GameState.ROAD||selected==GameState.PARK||s.nearRoad(r,c))) {
-            diamond(x,y,tileW-3,tileH-2,0x2374A44E);
+            tile(r,c,.05f,0x2374A44E);
             if((r*7+c)%3==0) { line(x-2,y,x+2,y,0x50658C50,1); line(x,y-2,x,y+2,0x50658C50,1); }
         }
-        if(inspectR==r && inspectC==c) diamond(x,y,tileW,tileH,0xFFEDD273);
+        if(inspectR==r && inspectC==c) tile(r,c,0,0xFFEDD273);
     }
     private void decoration(int r,int c) {
         float x=tx(r,c),y=ty(r,c),unit=tileW/38;
@@ -308,7 +353,7 @@ public final class GameView extends View {
         for(int i=0;i<Math.min(12,s.population()/2+2);i++) {
             float v=(phase*(.22f+i*.017f)+i*1.37f)%8;
             float rr=i%2==0?4:v, cc=i%2==0?v:4;
-            float x=200+(cc-rr)*tileW/2, y=originY+(cc+rr)*tileH/2;
+            float x=tx(rr,cc), y=ty(rr,cc);
             float bounce=(float)Math.sin(phase*8+i)*.5f;
             oval(x-2,y,4,2,0x205A7657);
             line(x-1,y,x-1.5f,y+2+(float)Math.sin(phase*7+i),0xFF5B685F,1);
@@ -317,7 +362,7 @@ public final class GameView extends View {
             circle(x,y-5+bounce,1.8f,0xFFFBE0B2);
         }
         // Little boat moves along the river.
-        float v=(phase*.14f+1)%8, x=200+(v-7)*tileW/2, y=originY+(v+7)*tileH/2;
+        float v=(phase*.14f+1)%8, x=tx(7,v), y=ty(7,v);
         poly(0xFFFAF2D9,x-5,y-1,x+5,y-1,x+2,y+2,x-2,y+2);
         line(x,y-1,x,y-10,0xFF9C886D,1);
         poly(0xFFE9A085,x+1,y-10,x+1,y-2,x+6,y-3);
@@ -377,7 +422,7 @@ public final class GameView extends View {
             int cost=s.upgradeCost(inspectR,inspectC);
             round(18,y+95,364,48,14,s.coins>=cost?GREEN:0xFF9EAEA0);
             textCentered("Улучшить · "+cost+" монет",200,y+125,14,Color.WHITE,true);
-            hit(18,y+95,364,48,()->{String error=s.upgrade(inspectR,inspectC); if(error!=null)message(error);else{sound();burst(tx(inspectR,inspectC),ty(inspectR,inspectC)-20);save();}});
+            hit(18,y+95,364,48,()->{String error=s.upgrade(inspectR,inspectC); if(error!=null)message(error);else{sound();burstTile(inspectR,inspectC);save();}});
         } else {
             round(18,y+95,364,48,14,0xFFE3EBD8); textCentered("Красота! Максимальный уровень",200,y+125,13,GREEN,true);
         }
@@ -396,7 +441,7 @@ public final class GameView extends View {
             textCentered("Пусть путешествие будет уютным",200,top+137,12,MUTED,false);
             guideRow(top+169,"1","Стройте касанием","Выберите здание внизу и свободную клетку.");
             guideRow(top+224,"2","Заботьтесь о жителях","Фермы дают еду, парки — настроение.");
-            guideRow(top+279,"3","Растите в своём темпе","Доход каждые 10 сек. Тап по дому — улучшение.");
+            guideRow(top+279,"3","Рассмотрите город","Два пальца: масштаб и поворот. Один: сдвиг. Двойной тап: сброс вида.");
             round(42,top+344,316,47,14,GREEN);
             textCentered("В городок!",200,top+374,15,Color.WHITE,true);
             hit(42,top+344,316,47,()->{modal=0;welcomeDone();sound();});
@@ -420,7 +465,7 @@ public final class GameView extends View {
             textCentered("Текущий город будет удалён.",200,top+77,12,MUTED,false);
             textCentered("Это действие нельзя отменить.",200,top+98,12,MUTED,false);
             round(42,top+123,316,44,13,0xFFB87860); textCentered("Да, новый город",200,top+151,14,Color.WHITE,true);
-            hit(42,top+123,316,44,()->{boolean sound=s.sound;s=new GameState();s.sound=sound;inspectR=-1;erase=false;selected=1;phase=0;particles.clear();save();modal=0;message("Новый остров ждёт ваших идей");});
+            hit(42,top+123,316,44,()->{boolean sound=s.sound;s=new GameState();s.sound=sound;inspectR=-1;erase=false;selected=1;phase=0;particles.clear();camera.reset();saveCamera();save();modal=0;message("Новый остров ждёт ваших идей");});
             round(42,top+178,316,37,12,0xFFE5EBDD); textCentered("Оставить мой город",200,top+202,13,GREEN,true);
             hit(42,top+178,316,37,()->modal=2);
         }
@@ -431,12 +476,16 @@ public final class GameView extends View {
         wrapped(subtitle,81,y+24,266,10,MUTED,14);
     }
     private void mapTap(float x,float y) {
-        float dx=(x-200)/(tileW/2), dy=(y-originY)/(tileH/2);
-        int c=Math.round((dx+dy)/2), r=Math.round((dy-dx)/2);
+        float screenX=x,screenY=y,centerY=originY+4*tileH;
+        int c=Math.round(camera.column(x-200,y-centerY,tileW,tileH));
+        int r=Math.round(camera.row(x-200,y-centerY,tileW,tileH));
+        x=200+(x-200-camera.panX)/camera.zoom;
+        y=centerY+(y-centerY-camera.panY)/camera.zoom;
         // Roofs extend beyond their plots. Pick the frontmost visible building first.
         boolean found=false;
-        for(int depth=16;depth>=0 && !found;depth--) for(int rr=8;rr>=0;rr--) {
-            int cc=depth-rr; if(cc<0||cc>=9)continue;
+        sortTiles();
+        for(int i=80;i>=0 && !found;i--) {
+            int rr=drawOrder[i]/9,cc=drawOrder[i]%9;
             int k=s.tiles[rr][cc]; if(k<1||k>4)continue;
             float unit=tileW/38, tall=(k==1?32+(s.levels[rr][cc]-1)*10:k==3?39+(s.levels[rr][cc]-1)*8:34)*unit;
             if(x>=tx(rr,cc)-14*unit && x<=tx(rr,cc)+14*unit && y>=ty(rr,cc)-tall && y<=ty(rr,cc)+3*unit) {
@@ -447,27 +496,76 @@ public final class GameView extends View {
         int kind=s.tiles[r][c];
         if(erase) {
             String error=s.demolish(r,c);
-            if(error!=null)message(error);else{sound();save();burst(x,y);message("Участок свободен. Часть монет возвращена");}
+            if(error!=null)message(error);else{sound();save();burst(screenX,screenY);message("Участок свободен. Часть монет возвращена");}
         } else if(kind>=GameState.HOUSE && kind<=GameState.PARK) { inspectR=r;inspectC=c; }
         else if(kind==GameState.EMPTY) {
             String error=s.build(r,c,selected);
-            if(error!=null)message(error);else{inspectR=-1;sound();save();burst(tx(r,c),ty(r,c));}
+            if(error!=null)message(error);else{inspectR=-1;sound();save();burstTile(r,c);}
         } else if(kind==GameState.WATER) message("По реке плывёт кораблик. Здесь строить нельзя");
         else {inspectR=-1;message("Дорога соединяет город. Стройте рядом с ней");}
     }
     @Override public boolean onTouchEvent(MotionEvent event) {
         float x=event.getX()/scale,y=(event.getY()-insetTop)/scale;
-        if(event.getAction()==MotionEvent.ACTION_DOWN) { touchX=x;touchY=y;return true; }
-        if(event.getAction()==MotionEvent.ACTION_UP) {
-            if(Math.abs(x-touchX)+Math.abs(y-touchY)>20)return true;
+        int action=event.getActionMasked();
+        if(action==MotionEvent.ACTION_DOWN) {
+            touchX=x;touchY=y;multiTouch=false;pinchReady=false;
+            mapTouch=modal==0 && y>233 && y<height-222;
+            if(mapTouch)taps.onTouchEvent(event);
+            return true;
+        }
+        if(action==MotionEvent.ACTION_POINTER_DOWN) {
+            multiTouch=true;cancelMapTap();
+            MotionEvent cancel=MotionEvent.obtain(event);cancel.setAction(MotionEvent.ACTION_CANCEL);
+            taps.onTouchEvent(cancel);cancel.recycle();
+            if(mapTouch && event.getPointerCount()==2)pinch(event,false);
+            return true;
+        }
+        if(action==MotionEvent.ACTION_MOVE && mapTouch) {
+            if(event.getPointerCount()>=2)pinch(event,pinchReady);
+            else if(!multiTouch)taps.onTouchEvent(event);
+            invalidate();return true;
+        }
+        if(action==MotionEvent.ACTION_POINTER_UP) { pinchReady=false;return true; }
+        if(action==MotionEvent.ACTION_CANCEL) { taps.onTouchEvent(event);cancelMapTap();saveCamera();mapTouch=false;return true; }
+        if(action==MotionEvent.ACTION_UP) {
+            if(mapTouch) {
+                if(!multiTouch)taps.onTouchEvent(event);
+                saveCamera();mapTouch=false;invalidate();return true;
+            }
+            if(multiTouch || Math.abs(x-touchX)+Math.abs(y-touchY)>20)return true;
             performClick();
             for(int i=hits.size()-1;i>=0;i--) if(hits.get(i).area.contains(x,y)) {hits.get(i).action.run();invalidate();return true;}
-            if(modal==0 && y>233 && y<height-200)mapTap(x,y);
             invalidate();return true;
         }
         return true;
     }
+    private void cancelMapTap() { if(pendingTap!=null) {removeCallbacks(pendingTap);pendingTap=null;} }
+    private void queueMapTap(float x,float y) {
+        if(pendingTap!=null) {
+            if(Math.hypot(x-pendingX,y-pendingY)<=18) {
+                cancelMapTap();camera.reset();saveCamera();invalidate();return;
+            }
+            Runnable first=pendingTap;removeCallbacks(first);first.run();
+        }
+        pendingX=x;pendingY=y;
+        pendingTap=()->{pendingTap=null;if(modal==0 && !suspended){performClick();mapTap(x,y);invalidate();}};
+        postDelayed(pendingTap,300);
+    }
+    private void pinch(MotionEvent e,boolean update) {
+        float dx=(e.getX(1)-e.getX(0))/scale,dy=(e.getY(1)-e.getY(0))/scale;
+        float span=(float)Math.hypot(dx,dy),angle=(float)Math.atan2(dy,dx);
+        float midX=(e.getX(0)+e.getX(1))/(2*scale)-200;
+        float midY=((e.getY(0)+e.getY(1))/2-insetTop)/scale-originY-4*tileH;
+        if(update && lastSpan>8 && span>8) {
+            float rotation=(float)Math.atan2(Math.sin(angle-lastAngle),Math.cos(angle-lastAngle));
+            camera.gesture(lastMidX,lastMidY,midX,midY,span/lastSpan,rotation,tileW,tileH);
+        }
+        lastSpan=span;lastAngle=angle;lastMidX=midX;lastMidY=midY;pinchReady=true;
+    }
     @Override public boolean performClick() {super.performClick();return true;}
+    private void burstTile(int r,int c) {
+        burst(200+camera.screenX(r,c,tileW),originY+4*tileH+camera.screenY(r,c,tileH)-15*camera.zoom);
+    }
     private void burst(float x,float y) {
         for(int i=0;i<18;i++) {
             Particle q=new Particle();q.x=x;q.y=y;q.vx=(random.nextFloat()-.5f)*70;q.vy=-25-random.nextFloat()*65;q.life=1+random.nextFloat()*.5f;
