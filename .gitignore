@@ -1,0 +1,7 @@
+.toolchain/
+build/
+.gradle/
+local.properties
+*.keystore
+*.apk.idsig
+.DS_Store
