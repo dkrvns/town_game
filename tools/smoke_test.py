@@ -31,10 +31,10 @@ def state():
     time.sleep(.4)
     tree=ET.fromstring(adb('shell','cat','/data/user/0/com.cloudtown.game/shared_prefs/cloudtown.xml'))
     raw=tree.find("string[@name='city']").text.split(';')
-    if raw[0] in ('2','3'):
+    if raw[0] in ('2','3','4'):
         cells={}
         for cell in raw[8+int(raw[7]):]:
-            if not cell or cell.startswith(('P,','D,')): continue
+            if not cell or cell.startswith(('P,','R,','D,')): continue
             r,c,kind,level=cell.split(',');cells[(int(r),int(c))]=kind+','+level
         tiles=[cells[(r,c)] for r in range(9) for c in range(9)]
     else:

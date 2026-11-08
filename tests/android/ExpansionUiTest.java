@@ -41,7 +41,7 @@ public final class ExpansionUiTest extends Instrumentation {
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
             SystemClock.sleep(1100);tap(353,210);
             check(city().coins==5000&&city().level(3,3)==3,"old city survives update");
-            check(prefs.getString("city","").startsWith("3;"),"save migrated to v3");
+            check(prefs.getString("city","").startsWith("4;"),"save migrated to v4");
             tap(306,653);tap(200,309.5f);
             check(city().count(GameState.FISH)==0&&city().coins==5000,"inland fishing placement rejected");
             tap(105,376);check(city().tile(6,1)==GameState.FISH&&city().foodProduction()==8,"fishing from toolbar");

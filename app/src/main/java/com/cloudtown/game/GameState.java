@@ -14,6 +14,9 @@ public final class GameState {
     private final int[][][] decorations=new int[WORLD_SIZE][WORLD_SIZE][4];
     public static final int QUEST_COUNT=15;
     public int peakPopulation=4,legacyLevel=1,eventId=0,nextEventTick=12,eventNumber=0,festivalUntil=0;
+    public static final int[] STAGE_COINS={100,200,300,500,800,1200},STAGE_FOOD={10,20,30,40,60,80};
+    public int stageRewardMask=0,stageSeenMask=0;
+    private final int[] stageCoinsReceived=new int[6],stageFoodReceived=new int[6];
     private final boolean[][] owned=new boolean[WORLD_SIZE][WORLD_SIZE];
     private final ArrayList<Plot> plots=new ArrayList<>();
     public int coins=400,food=30,ticks=0,quest=0;
@@ -82,8 +85,28 @@ public final class GameState {
     public int population() {return units(HOUSE)*4;}
     public int foodUse() {return units(HOUSE);}
     public int foodProduction() {return (units(FARM)+units(FISH))*4;}
-    public int happiness() {return Math.min(100,Math.max(20,65+units(PARK)*9+units(GARDEN)*12-units(HOUSE)*3-(food==0?25:0)+(ticks<festivalUntil?10:0)));}
-    public int income() {return 8+units(HOUSE)*5+units(SHOP)*9+units(TOWN_HALL)*40+happiness()/10+(ticks<festivalUntil?4:0);}
+    private int foodPenaltyFor(int households) {
+        if(households<=0||foodProduction()>=households)return 0;
+        if(food+foodProduction()<households)return 50;
+        return food<(households-foodProduction())*2?20:0;
+    }
+    public int foodPenaltyPercent() {return foodPenaltyFor(foodUse());}
+    private int happinessFor(int households) {
+        int hunger=foodPenaltyFor(households);
+        return Math.min(100,Math.max(20,65+units(PARK)*9+units(GARDEN)*12-households*3
+            -(hunger==50?25:hunger==20?10:0)+(ticks<festivalUntil?10:0)));
+    }
+    public int happiness() {return happinessFor(units(HOUSE));}
+    public int comfortPenaltyPercent() {return happiness()<40?50:happiness()<60?25:0;}
+    public int incomePenaltyPercent() {return 100-(100-foodPenaltyPercent())*(100-comfortPenaltyPercent())/100;}
+    public int grossIncome() {return 8+units(HOUSE)*5+units(SHOP)*9+units(TOWN_HALL)*40+happiness()/10+(ticks<festivalUntil?4:0);}
+    public int income() {return 8+(grossIncome()-8)*(100-foodPenaltyPercent())*(100-comfortPenaltyPercent())/10000;}
+    public String growthLock() {
+        int next=foodUse()+1;
+        if(food+foodProduction()<next)return "Новым жителям не хватит еды. Постройте или улучшите ферму либо домик рыбака";
+        if(happinessFor(next)<40)return "После заселения уют должен остаться от 40%. Добавьте или улучшите парк";
+        return null;
+    }
     private boolean near(int r,int c,int kind) {return tile(r-1,c)==kind||tile(r+1,c)==kind||tile(r,c-1)==kind||tile(r,c+1)==kind;}
     public boolean nearRoad(int r,int c) {return near(r,c,ROAD);}
     public boolean nearRiver(int r,int c) {return near(r,c,WATER);}
@@ -92,6 +115,7 @@ public final class GameState {
         if(tile(r,c)!=EMPTY)return "Этот участок уже занят";
         if(kind==FISH&&!nearRiver(r,c))return "Домик рыбака строится только на берегу, рядом с рекой";
         if(kind!=ROAD&&kind!=PARK&&kind!=FISH&&!nearRoad(r,c))return "Здание должно стоять рядом с дорогой";
+        if(kind==HOUSE) {String lock=growthLock();if(lock!=null)return lock;}
         if(kind==GARDEN||kind==TOWN_HALL) {
             int required=kind==GARDEN?480:800;
             if(peakPopulation<required)return "Откроется при "+required+" жителях";
@@ -100,7 +124,25 @@ public final class GameState {
         if(coins<COST[kind])return "Не хватает монет. Город приносит доход каждые 10 секунд";
         coins-=COST[kind];put(r,c,kind);refreshProgress();return null;
     }
-    public void refreshProgress() {peakPopulation=Math.max(peakPopulation,population());}
+    public void refreshProgress() {
+        peakPopulation=Math.max(peakPopulation,population());
+        for(int i=0;i<6;i++)if(peakPopulation>=DecorCatalog.MILESTONES[i]&&(stageRewardMask&(1<<i))==0) {
+            stageCoinsReceived[i]=Math.min(STAGE_COINS[i],999999-coins);
+            stageFoodReceived[i]=Math.min(STAGE_FOOD[i],999-food);
+            coins+=stageCoinsReceived[i];food+=stageFoodReceived[i];stageRewardMask|=1<<i;
+        }
+    }
+    public int nextStageNotice() {
+        for(int i=0;i<6;i++)if((stageRewardMask&(1<<i))!=0&&(stageSeenMask&(1<<i))==0)return i;
+        return -1;
+    }
+    public void acknowledgeStage(int index) {if(index>=0&&index<6&&(stageRewardMask&(1<<index))!=0)stageSeenMask|=1<<index;}
+    public int stageCoinsReceived(int index) {return stageCoinsReceived[index];}
+    public int stageFoodReceived(int index) {return stageFoodReceived[index];}
+    public String stageUnlocks(int index) {
+        String[] text={"Клумбы, кусты и декоративные камни", "Уровень 2 зданий. Скамейки, фонари и указатели", "События города. Заборчики, цветы и кашпо", "Уровень 3 зданий. Дорожки, скульптуры и навесы", "Большой сад. Фонтаны, гирлянды и праздничные ели", "Ратуша. Памятник, арка и флаг"};
+        return text[index];
+    }
     public int maxLevel() {refreshProgress();return Math.max(legacyLevel,peakPopulation>=240?3:peakPopulation>=60?2:1);}
     public int buildingMax(int kind) {return kind>=GARDEN?1:3;}
     public String upgradeLock(int r,int c) {
@@ -119,6 +161,7 @@ public final class GameState {
     public String upgrade(int r,int c) {
         if(!isBuilding(tile(r,c)))return "Это здание нельзя улучшить";
         String lock=upgradeLock(r,c);if(lock!=null)return lock;
+        if(tile(r,c)==HOUSE) {lock=growthLock();if(lock!=null)return lock;}
         int cost=upgradeCost(r,c);
         if(coins<cost)return "Для улучшения нужно "+cost+" монет";
         coins-=cost;levels[r+OFFSET][c+OFFSET]++;refreshProgress();return null;
@@ -178,8 +221,9 @@ public final class GameState {
     public boolean advance(float seconds) {
         if(paused||seconds<=0)return false;
         elapsed+=Math.min(seconds,1f);if(elapsed<10)return false;
+        int earnings=income();
         elapsed-=10;ticks++;food=Math.max(0,Math.min(999,food+foodProduction()-foodUse()));
-        coins=Math.min(999999,coins+income());refreshProgress();
+        coins=Math.min(999999,coins+earnings);refreshProgress();
         if(peakPopulation>=120&&eventId==0&&ticks>=nextEventTick)eventId=1+eventNumber%3;return true;
     }
     public String questTitle() {
@@ -207,14 +251,16 @@ public final class GameState {
     public boolean canClaim() {return quest<QUEST_COUNT&&questProgress()>=questTarget();}
     public int claim() {if(!canClaim())return 0;int reward=questReward();coins=Math.min(999999,coins+reward);quest++;return reward;}
     public String encode() {
-        StringBuilder b=new StringBuilder("3;").append(coins).append(';').append(food).append(';').append(ticks).append(';')
+        refreshProgress();
+        StringBuilder b=new StringBuilder("4;").append(coins).append(';').append(food).append(';').append(ticks).append(';')
             .append(quest).append(';').append(elapsed).append(';').append(sound?1:0).append(';').append(plots.size()).append(';');
         for(Plot p:plots)b.append(p.r).append(',').append(p.c).append(';');
         for(int r=-OFFSET;r<WORLD_SIZE-OFFSET;r++)for(int c=-OFFSET;c<WORLD_SIZE-OFFSET;c++)if(valid(r,c))
             b.append(r).append(',').append(c).append(',').append(tile(r,c)).append(',').append(level(r,c)).append(';');
         refreshProgress();
         b.append("P,").append(peakPopulation).append(',').append(legacyLevel).append(',').append(eventId).append(',')
-            .append(nextEventTick).append(',').append(eventNumber).append(',').append(festivalUntil).append(';');
+            .append(nextEventTick).append(',').append(eventNumber).append(',').append(festivalUntil).append(',').append(stageRewardMask).append(',').append(stageSeenMask).append(';');
+        b.append("R");for(int i=0;i<6;i++)b.append(',').append(stageCoinsReceived[i]).append(',').append(stageFoodReceived[i]);b.append(';');
         for(int r=-OFFSET;r<WORLD_SIZE-OFFSET;r++)for(int c=-OFFSET;c<WORLD_SIZE-OFFSET;c++)if(valid(r,c))
             for(int slot=0;slot<4;slot++)if(decor(r,c,slot)!=0)b.append("D,").append(r).append(',').append(c).append(',').append(slot).append(',').append(decor(r,c,slot)).append(';');
         return b.toString();
@@ -225,7 +271,7 @@ public final class GameState {
             String[] p=data.split(";");GameState s=new GameState();
             s.coins=Integer.parseInt(p[1]);s.food=Integer.parseInt(p[2]);s.ticks=Integer.parseInt(p[3]);s.quest=Integer.parseInt(p[4]);
             s.elapsed=Float.parseFloat(p[5]);s.sound=p[6].equals("1");
-            if(s.coins<0||s.coins>999999||s.food<0||s.food>999||s.ticks<0||s.quest<0||s.quest>(p[0].equals("3")?QUEST_COUNT:6)||Float.isNaN(s.elapsed)||Float.isInfinite(s.elapsed)||s.elapsed<0||s.elapsed>=10)return new GameState();
+            if(s.coins<0||s.coins>999999||s.food<0||s.food>999||s.ticks<0||s.quest<0||s.quest>((p[0].equals("3")||p[0].equals("4"))?QUEST_COUNT:6)||Float.isNaN(s.elapsed)||Float.isInfinite(s.elapsed)||s.elapsed<0||s.elapsed>=10)return new GameState();
             if(p[0].equals("1")) {
                 if(p.length!=7+81)return new GameState();
                 for(int r=0;r<9;r++)for(int c=0;c<9;c++) {
@@ -233,9 +279,9 @@ public final class GameState {
                     if(t<0||t>WATER||!validLevel(t,l))return new GameState();
                     s.put(r,c,t);s.levels[r+OFFSET][c+OFFSET]=l;
                 }
-            } else if(p[0].equals("2")||p[0].equals("3")) {
-                int n=Integer.parseInt(p[7]),end=8+n+81+16*n;boolean modern=p[0].equals("3");
-                if(n<0||n>100||(modern?p.length<end+1:p.length!=end))return new GameState();
+            } else if(p[0].equals("2")||p[0].equals("3")||p[0].equals("4")) {
+                int n=Integer.parseInt(p[7]),end=8+n+81+16*n;boolean modern=!p[0].equals("2"),rewards=p[0].equals("4");
+                if(n<0||n>100||(modern?p.length<end+(rewards?2:1):p.length!=end))return new GameState();
                 for(int i=0;i<n;i++) {
                     String[] xy=p[8+i].split(",");int r=Integer.parseInt(xy[0]),c=Integer.parseInt(xy[1]);
                     if(!s.offered(r,c))return new GameState();s.addPlot(r,c);
@@ -248,11 +294,20 @@ public final class GameState {
                     seen[r+OFFSET][c+OFFSET]=true;s.put(r,c,t);s.levels[r+OFFSET][c+OFFSET]=l;
                 }
                 if(modern) {
-                    String[] meta=p[end].split(",");if(meta.length!=7||!meta[0].equals("P"))return new GameState();
+                    String[] meta=p[end].split(",");if(meta.length!=(rewards?9:7)||!meta[0].equals("P"))return new GameState();
                     s.peakPopulation=Integer.parseInt(meta[1]);s.legacyLevel=Integer.parseInt(meta[2]);s.eventId=Integer.parseInt(meta[3]);
                     s.nextEventTick=Integer.parseInt(meta[4]);s.eventNumber=Integer.parseInt(meta[5]);s.festivalUntil=Integer.parseInt(meta[6]);
                     if(s.peakPopulation<0||s.peakPopulation>WORLD_SIZE*WORLD_SIZE*12||s.legacyLevel<1||s.legacyLevel>3||s.eventId<0||s.eventId>3||s.nextEventTick<0||s.eventNumber<0||s.festivalUntil<0)return new GameState();
-                    for(int i=end+1;i<p.length;i++) {
+                    if(rewards) {
+                        s.stageRewardMask=Integer.parseInt(meta[7]);s.stageSeenMask=Integer.parseInt(meta[8]);
+                        if(s.stageRewardMask<0||s.stageRewardMask>63||s.stageSeenMask<0||(s.stageSeenMask&~s.stageRewardMask)!=0)return new GameState();
+                        String[] paid=p[end+1].split(",");if(paid.length!=13||!paid[0].equals("R"))return new GameState();
+                        for(int i=0;i<6;i++) {
+                            s.stageCoinsReceived[i]=Integer.parseInt(paid[1+2*i]);s.stageFoodReceived[i]=Integer.parseInt(paid[2+2*i]);
+                            if(s.stageCoinsReceived[i]<0||s.stageCoinsReceived[i]>STAGE_COINS[i]||s.stageFoodReceived[i]<0||s.stageFoodReceived[i]>STAGE_FOOD[i])return new GameState();
+                        }
+                    }
+                    for(int i=end+(rewards?2:1);i<p.length;i++) {
                         String[] d=p[i].split(",");if(d.length!=5||!d[0].equals("D"))return new GameState();
                         int r=Integer.parseInt(d[1]),c=Integer.parseInt(d[2]),slot=Integer.parseInt(d[3]),kind=Integer.parseInt(d[4]);
                         if(!s.valid(r,c)||s.tile(r,c)==WATER||slot<0||slot>3||!DecorCatalog.valid(kind)||s.decor(r,c,slot)!=0)return new GameState();
@@ -260,7 +315,7 @@ public final class GameState {
                     }
                 }
             } else return new GameState();
-            if(!p[0].equals("3")) {
+            if(p[0].equals("1")||p[0].equals("2")) {
                 for(int[] row:s.levels)for(int l:row)s.legacyLevel=Math.max(s.legacyLevel,l);
                 int[] map={0,1,2,3,6,7,7};s.quest=map[s.quest];
             }

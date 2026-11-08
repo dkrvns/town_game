@@ -41,7 +41,7 @@ public final class CameraGestureTest extends Instrumentation {
         Bundle result=new Bundle();
         try {
             prefs=getTargetContext().getSharedPreferences("cloudtown",0);
-            GameState seed=new GameState();seed.peakPopulation=60;
+            GameState seed=new GameState();seed.peakPopulation=60;seed.stageRewardMask=3;seed.stageSeenMask=3;
             prefs.edit().clear().putBoolean("welcomed",true).putString("city",seed.encode()).commit();
             Activity activity=startActivitySync(new Intent().setClassName("com.cloudtown.game","com.cloudtown.game.MainActivity")
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));

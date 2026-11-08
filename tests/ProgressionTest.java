@@ -5,19 +5,21 @@ public final class ProgressionTest {
     private static int checks;
     private static void check(boolean ok,String label) {checks++;if(!ok)throw new AssertionError(label);}
     private static void grow(GameState s,int target) {
-        for(int guard=0;s.population()<target&&guard<1000;guard++) {
+        for(int guard=0;s.population()<target&&guard<1200;guard++) {
             s.coins=999999;boolean changed=false;
-            for(int r=-16;r<=24&&!changed;r++)for(int c=-16;c<=24&&!changed;c++)
+            int support=s.foodProduction()<s.foodUse()+1?GameState.FARM:s.happiness()<43?GameState.PARK:0;
+            if(support==0)for(int r=-16;r<=24&&!changed;r++)for(int c=-16;c<=24&&!changed;c++)
                 if(s.tile(r,c)==GameState.HOUSE&&s.level(r,c)<s.maxLevel())changed=s.upgrade(r,c)==null;
             if(changed)continue;
+            int kind=support==0?GameState.HOUSE:support;
             for(int r=-16;r<=24&&!changed;r++)for(int c=-16;c<=24&&!changed;c++)
-                if(s.tile(r,c)==GameState.EMPTY&&s.nearRoad(r,c))changed=s.build(r,c,GameState.HOUSE)==null;
+                if(s.tile(r,c)==GameState.EMPTY&&(kind==GameState.PARK||s.nearRoad(r,c)))changed=s.build(r,c,kind)==null;
             if(changed)continue;
             check(!s.availablePlots().isEmpty(),"reachable growth frontier");
             GameState.Plot p=s.availablePlots().get(0);check(s.buyPlot(p.r,p.c)==null,"growth land purchase");
             for(int c=p.c;c<p.c+4;c++)if(s.tile(p.r+1,c)==GameState.EMPTY)s.build(p.r+1,c,GameState.ROAD);
         }
-        check(s.population()>=target,"reach "+target+" residents");
+        check(s.population()>=target,"reach "+target+" residents with food and parks");
     }
     private static void buildSomewhere(GameState s,int kind) {
         s.coins=999999;
@@ -80,7 +82,7 @@ public final class ProgressionTest {
         check(GameState.decode(s.encode()).quest==15,"finished progression save");
         GameState old=new GameState();old.legacyLevel=3;old.coins=5000;
         old.buyPlot(-4,0);old.upgrade(3,3);old.upgrade(3,3);old.quest=6;
-        String modern=old.encode();String v2=modern.substring(0,modern.indexOf("P,")).replaceFirst("^3;","2;");
+        String modern=old.encode();String v2=modern.substring(0,modern.indexOf("P,")).replaceFirst("^[34];","2;");
         GameState migrated=GameState.decode(v2);
         check(migrated.plotCount()==1&&migrated.coins==old.coins&&migrated.level(3,3)==3,"version 1.2 city and land migrate");
         check(migrated.maxLevel()==3&&migrated.peakPopulation==12,"legacy upgrades retained without fictitious population");
