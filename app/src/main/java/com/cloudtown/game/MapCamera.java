@@ -3,6 +3,8 @@ package com.cloudtown.game;
 /** Camera coordinates are relative to the island centre, in logical screen units. */
 public final class MapCamera {
     public float zoom = 1, angle, panX, panY;
+    private float limitX=150,limitY=90;
+    public void setBounds(float x,float y) {limitX=Math.max(150,x);limitY=Math.max(90,y);constrain();}
     public void reset() { zoom=1;angle=panX=panY=0; }
     public void restore(float zoom,float angle,float panX,float panY) {
         if(!finite(zoom)||!finite(angle)||!finite(panX)||!finite(panY)) { reset();return; }
@@ -12,8 +14,8 @@ public final class MapCamera {
     private void constrain() {
         zoom=Math.max(.7f,Math.min(3f,zoom));
         angle=(float)Math.atan2(Math.sin(angle),Math.cos(angle));
-        panX=Math.max(-150*zoom,Math.min(150*zoom,panX));
-        panY=Math.max(-90*zoom,Math.min(90*zoom,panY));
+        panX=Math.max(-limitX*zoom,Math.min(limitX*zoom,panX));
+        panY=Math.max(-limitY*zoom,Math.min(limitY*zoom,panY));
     }
     public float x(float r,float c,float tileW) {
         double co=Math.cos(angle),si=Math.sin(angle);

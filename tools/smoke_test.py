@@ -17,7 +17,7 @@ assert SERIAL.startswith('emulator-'), 'This test only runs on a disposable emul
 def adb(*args, binary=False):
     return subprocess.check_output([str(ADB),'-s',SERIAL,*args],timeout=30,text=not binary)
 assert adb('shell','getprop','ro.kernel.qemu').strip()=='1'
-assert '1080x2160' in adb('shell','wm','size')
+assert adb('shell','wm','size').strip().splitlines()[-1].endswith('1080x2160'), 'Reset emulator screen size before testing'
 adb('root'); adb('wait-for-device')
 adb('install','-r',str(ROOT/'dist/CloudTown.apk'))
 adb('shell','pm','clear','com.cloudtown.game')
@@ -31,7 +31,15 @@ def state():
     time.sleep(.4)
     tree=ET.fromstring(adb('shell','cat','/data/user/0/com.cloudtown.game/shared_prefs/cloudtown.xml'))
     raw=tree.find("string[@name='city']").text.split(';')
-    return {'coins':int(raw[1]),'quest':int(raw[4]),'tiles':raw[7:88]}
+    if raw[0]=='2':
+        cells={}
+        for cell in raw[8+int(raw[7]):]:
+            if not cell: continue
+            r,c,kind,level=cell.split(',');cells[(int(r),int(c))]=kind+','+level
+        tiles=[cells[(r,c)] for r in range(9) for c in range(9)]
+    else:
+        tiles=raw[7:88]
+    return {'coins':int(raw[1]),'quest':int(raw[4]),'tiles':tiles}
 launch()
 (ROOT/'dist/first-launch.png').write_bytes(adb('exec-out','screencap','-p',binary=True))
 tap(200,515) # welcome

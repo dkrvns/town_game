@@ -69,10 +69,10 @@ public final class CameraGestureTest extends Instrumentation {
             MapCamera cam=new MapCamera();cam.restore(1.8f,(float)Math.PI/4,5,2);
             tap(200+cam.screenX(3,3,38),385.5f+cam.screenY(3,3,19)-20*cam.zoom,400);
             tap(200,664,200);
-            check(city().levels[3][3]==2 && city().coins==220,"select roof and upgrade after zoom/rotation/pan");
+            check(city().level(3,3)==2 && city().coins==220,"select roof and upgrade after zoom/rotation/pan");
             tap(363,579,100); // close inspector
             tap(200+cam.screenX(2,3,38),385.5f+cam.screenY(2,3,19),400);
-            check(city().tiles[2][3]==GameState.HOUSE && city().coins==130,"build on correct plot after camera gesture");
+            check(city().tile(2,3)==GameState.HOUSE && city().coins==130,"build on correct plot after camera gesture");
             sleep(800);
             Bitmap shot=getUiAutomation().takeScreenshot();
             try(FileOutputStream out=new FileOutputStream(new File(getTargetContext().getCacheDir(),"camera-preview.png"))) {

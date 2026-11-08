@@ -27,6 +27,8 @@ import java.util.Random;
 public final class GameView extends View {
     private static final int INK = 0xFF294D48, MUTED = 0xFF71877E, GREEN = 0xFF277B64;
     private static final int CREAM = 0xFFF8FAF1, GOLD = 0xFFEFB947;
+    private static final float[] EDGE_R={-.5f,-.5f,.5f,.5f},EDGE_C={-.5f,.5f,.5f,-.5f};
+    private static final int[] NEIGHBOR_R={-1,0,1,0},NEIGHBOR_C={0,1,0,-1};
     private final Paint p = new Paint(3);
     private final Path path = new Path();
     private final Typeface normal = Typeface.create("sans-serif", Typeface.NORMAL);
@@ -39,9 +41,10 @@ public final class GameView extends View {
     private float tileW = 37, tileH = 18.5f, originY = 300, phase;
     private long lastFrame;
     private boolean suspended;
-    private int selected = GameState.HOUSE, inspectR = -1, inspectC = -1;
+    private static final int NO_SELECTION=-999;
+    private int selected = GameState.HOUSE, inspectR = NO_SELECTION, inspectC = NO_SELECTION;
     private boolean erase;
-    private int modal; // 1 guide, 2 settings, 3 reset confirmation
+    private int modal; // 1 guide, 2 settings, 3 reset confirmation, 4 land purchase
     private String toast = "";
     private float toastTime;
     private final ArrayList<Hit> hits = new ArrayList<>();
@@ -50,7 +53,12 @@ public final class GameView extends View {
     private float touchX, touchY;
     private final MapCamera camera = new MapCamera();
     private final GestureDetector taps;
-    private final int[] drawOrder = new int[81];
+    private final int[] drawOrder = new int[GameState.WORLD_SIZE*GameState.WORLD_SIZE];
+    private int tileCount, cachedPlots=-1;
+    private GameState cachedCity;
+    private float sortedAngle=Float.NaN,sortedTileW=Float.NaN;
+    private boolean expanding;
+    private GameState.Plot selectedPlot;
     private boolean mapTouch, multiTouch, pinchReady;
     private float lastSpan, lastAngle, lastMidX, lastMidY;
     private Runnable pendingTap;
@@ -66,6 +74,7 @@ public final class GameView extends View {
         super(context);
         prefs = context.getSharedPreferences("cloudtown", Context.MODE_PRIVATE);
         s = GameState.decode(prefs.getString("city", null));
+        camera.setBounds(800,450);
         camera.restore(prefs.getFloat("camera_zoom",1),prefs.getFloat("camera_angle",0),
             prefs.getFloat("camera_x",0),prefs.getFloat("camera_y",0));
         taps = new GestureDetector(context,new GestureDetector.SimpleOnGestureListener() {
@@ -103,7 +112,8 @@ public final class GameView extends View {
     public void release() { if (tone != null) { tone.release(); tone=null; } }
     public boolean back() {
         if (modal != 0) { modal=0; welcomeDone(); invalidate(); return true; }
-        if (inspectR >= 0) { inspectR=-1; invalidate(); return true; }
+        if (expanding) { expanding=false;invalidate();return true; }
+        if (inspectR != NO_SELECTION) { inspectR=NO_SELECTION; invalidate(); return true; }
         return false;
     }
     private void welcomeDone() { prefs.edit().putBoolean("welcomed",true).apply(); }
@@ -205,6 +215,7 @@ public final class GameView extends View {
         text(s.paused?"▶":"Ⅱ",336,216,15,GREEN,true);
         text(s.paused?"пуск":"пауза",352,214,8,GREEN,false);
         hit(321,191,67,41,()->{s.paused=!s.paused; save();});
+        sortTiles();
         canvas.save();
         canvas.clipRect(0,233,400,height-222);
         canvas.translate(200+camera.panX,originY+4*tileH+camera.panY);
@@ -212,15 +223,10 @@ public final class GameView extends View {
         canvas.translate(-200,-originY-4*tileH);
         float half=GameState.SIZE*tileW/2, mid=originY+4*tileH;
         oval(200-half-10,mid+tileH*3.3f,half*2+20,tileH*4,0x207A9D8E);
-        float[] rs={-.5f,-.5f,8.5f,8.5f},cs={-.5f,8.5f,8.5f,-.5f};
-        for(int i=0;i<4;i++) {
-            int j=(i+1)%4;
-            float x=tx(rs[i],cs[i]),y=ty(rs[i],cs[i]),xx=tx(rs[j],cs[j]),yy=ty(rs[j],cs[j]);
-            poly((x+xx)/2<200?0xFF89AF8C:0xFF689680,x,y,xx,yy,xx,yy+17,x,y+17);
-        }
-        sortTiles();
-        for(int cell:drawOrder) ground(cell/9,cell%9);
-        for(int cell:drawOrder) decoration(cell/9,cell%9);
+        if(expanding)for(GameState.Plot plot:s.availablePlots())plotPreview(plot);
+        for(int i=0;i<tileCount;i++)islandEdge(row(drawOrder[i]),col(drawOrder[i]));
+        for(int i=0;i<tileCount;i++)ground(row(drawOrder[i]),col(drawOrder[i]));
+        for(int i=0;i<tileCount;i++)decoration(row(drawOrder[i]),col(drawOrder[i]));
         citizens();
         canvas.restore();
         // Gentle evening tint, one full day every four real minutes.
@@ -236,12 +242,45 @@ public final class GameView extends View {
     }
     private float tx(float r,float c) { return 200+camera.x(r,c,tileW); }
     private float ty(float r,float c) { return originY+4*tileH+camera.y(r,c,tileH); }
+    private int row(int cell) {return cell/GameState.WORLD_SIZE-GameState.OFFSET;}
+    private int col(int cell) {return cell%GameState.WORLD_SIZE-GameState.OFFSET;}
     private void sortTiles() {
-        for(int i=0;i<81;i++) {
-            int j=i;float depth=ty(i/9,i%9);
-            while(j>0 && ty(drawOrder[j-1]/9,drawOrder[j-1]%9)>depth) { drawOrder[j]=drawOrder[j-1];j--; }
-            drawOrder[j]=i;
+        if(cachedCity!=s || cachedPlots!=s.plotCount()) {
+            tileCount=0;
+            for(int r=-GameState.OFFSET;r<GameState.WORLD_SIZE-GameState.OFFSET;r++)
+                for(int c=-GameState.OFFSET;c<GameState.WORLD_SIZE-GameState.OFFSET;c++)if(s.valid(r,c))
+                    drawOrder[tileCount++]=(r+GameState.OFFSET)*GameState.WORLD_SIZE+c+GameState.OFFSET;
+            cachedCity=s;cachedPlots=s.plotCount();sortedAngle=Float.NaN;
         }
+        if(sortedAngle==camera.angle&&sortedTileW==tileW)return;
+        for(int i=1;i<tileCount;i++) {
+            int cell=drawOrder[i],j=i;float depth=ty(row(cell),col(cell));
+            while(j>0&&ty(row(drawOrder[j-1]),col(drawOrder[j-1]))>depth) {drawOrder[j]=drawOrder[j-1];j--;}
+            drawOrder[j]=cell;
+        }
+        sortedAngle=camera.angle;sortedTileW=tileW;
+        float maxX=150,maxY=90;
+        for(int i=0;i<tileCount;i++) {
+            maxX=Math.max(maxX,Math.abs(tx(row(drawOrder[i]),col(drawOrder[i]))-200));
+            maxY=Math.max(maxY,Math.abs(ty(row(drawOrder[i]),col(drawOrder[i]))-originY-4*tileH));
+        }
+        camera.setBounds(maxX,maxY);
+    }
+    private void islandEdge(int r,int c) {
+        for(int i=0;i<4;i++)if(!s.valid(r+NEIGHBOR_R[i],c+NEIGHBOR_C[i])) {
+            int j=(i+1)%4;float x=tx(r+EDGE_R[i],c+EDGE_C[i]),y=ty(r+EDGE_R[i],c+EDGE_C[i]);
+            float xx=tx(r+EDGE_R[j],c+EDGE_C[j]),yy=ty(r+EDGE_R[j],c+EDGE_C[j]);
+            poly((x+xx)/2<200?0xFF89AF8C:0xFF689680,x,y,xx,yy,xx,yy+17,x,y+17);
+        }
+    }
+    private void plotPreview(GameState.Plot plot) {
+        float r=plot.r,c=plot.c;
+        poly(0x2882A875,tx(r-.5f,c-.5f),ty(r-.5f,c-.5f),tx(r-.5f,c+3.5f),ty(r-.5f,c+3.5f),
+            tx(r+3.5f,c+3.5f),ty(r+3.5f,c+3.5f),tx(r+3.5f,c-.5f),ty(r+3.5f,c-.5f));
+        p.setStyle(Paint.Style.STROKE);p.setStrokeWidth(1.5f);p.setColor(0xFF65957C);canvas.drawPath(path,p);p.setStyle(Paint.Style.FILL);
+        float x=tx(r+1.5f,c+1.5f),y=ty(r+1.5f,c+1.5f);
+        circle(x,y-4,12,0xFFF7FAED);textCentered("+",x,y+1,18,GREEN,true);
+        textCentered("4×4",x,y+22,11,GREEN,true);
     }
     private void tile(float r,float c,float inset,int color) {
         float d=.5f-inset;
@@ -251,7 +290,7 @@ public final class GameView extends View {
     private void diamond(float x,float y,float w,float h,int color) { poly(color,x,y-h/2,x+w/2,y,x,y+h/2,x-w/2,y); }
     private void ground(int r,int c) {
         float x=tx(r,c), y=ty(r,c);
-        int kind=s.tiles[r][c];
+        int kind=s.tile(r,c);
         int grass=(r+c)%2==0?0xFFA7CC83:0xFFA0C67C;
         tile(r,c,-.008f,kind==GameState.WATER?0xFF79C8C8:kind==GameState.ROAD?0xFFE1D4AB:grass);
         if(kind==GameState.WATER) {
@@ -266,7 +305,7 @@ public final class GameView extends View {
                 line(tx(r-.4f,c+.4f),ty(r-.4f,c+.4f),tx(r+.4f,c+.4f),ty(r+.4f,c+.4f),0xFF947957,2);
             } else circle(x,y,1,0xFFD0BE94);
         }
-        if(kind==GameState.EMPTY && inspectR<0 && !erase && (selected==GameState.ROAD||selected==GameState.PARK||s.nearRoad(r,c))) {
+        if(kind==GameState.EMPTY && inspectR==NO_SELECTION && !erase && !expanding && (selected==GameState.FISH?s.nearRiver(r,c):(selected==GameState.ROAD||selected==GameState.PARK||s.nearRoad(r,c)))) {
             tile(r,c,.05f,0x2374A44E);
             if((r*7+c)%3==0) { line(x-2,y,x+2,y,0x50658C50,1); line(x,y-2,x,y+2,0x50658C50,1); }
         }
@@ -274,10 +313,10 @@ public final class GameView extends View {
     }
     private void decoration(int r,int c) {
         float x=tx(r,c),y=ty(r,c),unit=tileW/38;
-        int k=s.tiles[r][c];
-        if(k>=1 && k<=4) {
+        int k=s.tile(r,c);
+        if(GameState.isBuilding(k)) {
             canvas.save(); canvas.translate(x,y); canvas.scale(unit,unit);
-            building(k,0,0,s.levels[r][c]); canvas.restore();
+            building(k,0,0,s.level(r,c)); canvas.restore();
         } else if(k==GameState.EMPTY) {
             int hash=r*19+c*7;
             if(hash%5==0) tree(x,y,unit*.65f,hash%3);
@@ -331,6 +370,19 @@ public final class GameView extends View {
             line(x-7,y+6,x-1,y+9,0xFFB18E5B,2.3f);
             if(level>1) { circle(x+10,y+3,2,0xFFEFA794); circle(x-10,y+3,2,0xFFFFD788); }
         }
+        if(kind==GameState.FISH) {
+            float h=14+(level-1)*5;
+            diamond(x,y+3,32,15,0xFFBA9B6C);
+            for(int j=0;j<4;j++)line(x-11+j*5,y+1,x-4+j*5,y+5,0xFFE8C896,1);
+            box(x-2,y-2,9,5,h,0xFFA9D5D1,0xFF76ABA9,0xFFC6E3D6);
+            poly(0xFF6B9D94,x-13,y-h-6,x-2,y-h-15,x+9,y-h-6,x-2,y-h);
+            poly(0xFFF7E7B9,x-8,y-9,x-4,y-7,x-4,y-14,x-8,y-16);
+            line(x+8,y,x+14,y-20,0xFF8F7654,1.5f);
+            line(x+14,y-20,x+17,y+4,0xFFDFE9DD,.7f);
+            circle(x+17,y+4+(float)Math.sin(phase*3)*.7f,1.7f,0xFFEB9A78);
+            oval(x+3,y,7,5,0xFF8AA99B);oval(x+4,y+1,4,2,0xFFD1E9D9);
+            line(x-13,y-3,x-9,y-9,0x99EAEAD4,.7f);line(x-14,y-5,x-8,y-5,0x99EAEAD4,.7f);
+        }
         if(level>1) { circle(x+13,y-3,4.5f,0xFFF7F4D8); text(Integer.toString(level),x+11,y-1,6,GREEN,true); }
     }
     private void box(float x,float y,float w,float d,float h,int left,int right,int top) {
@@ -375,28 +427,39 @@ public final class GameView extends View {
     }
     private void toolbar() {
         float y=height-185;
-        round(0,y,400,210,24,CREAM);
-        round(178,y+8,44,3,2,0xFFDBE3D6);
-        if(inspectR>=0) {
-            inspector(y); return;
+        round(0,y,400,210,24,CREAM);round(178,y+8,44,3,2,0xFFDBE3D6);
+        if(inspectR!=NO_SELECTION) {inspector(y);return;}
+        text(expanding?"Расширяем город":erase?"Навести порядок":"Построим что-нибудь?",18,y+34,17,INK,true);
+        text(expanding?"Коснитесь участка с плюсом на карте":erase?"Коснитесь здания · возврат 50% стоимости":"Выберите здание и коснитесь лужайки",18,y+51,10,MUTED,false);
+        round(301,y+19,82,32,10,expanding?GREEN:0xFFDFEBD5);
+        textCentered(expanding?"Готово":"Земля +",342,y+40,11,expanding?Color.WHITE:GREEN,true);
+        hit(297,y+15,90,40,()->{
+            expanding=!expanding;erase=false;
+            if(expanding){camera.restore(.7f,camera.angle,0,0);saveCamera();}
+        });
+        if(expanding) {
+            round(16,y+68,368,83,15,0xFFE7EEDC);
+            text("Новый участок 4×4",31,y+94,17,INK,true);
+            text("16 клеток · "+s.landCost()+" монет",31,y+117,13,GREEN,true);
+            text("Куплено участков: "+s.plotCount(),31,y+137,10,MUTED,false);
+            textCentered("Река продолжается через новые земли",200,y+173,10,MUTED,false);
+            if(s.availablePlots().isEmpty())textCentered("Все доступные земли уже куплены",200,y+163,10,GREEN,true);
+            return;
         }
-        text(erase?"Навести порядок":"Построим что-нибудь?",18,y+34,17,INK,true);
-        text(erase?"Коснитесь здания · возврат 50% стоимости":"Выберите здание и коснитесь лужайки",18,y+51,10.5f,MUTED,false);
-        String[] labels={"Домик","Ферма","Магазин","Парк","Дорога","Снос"};
-        for(int i=0;i<6;i++) {
-            final int index=i;
-            float x=14+i*63, top=y+64;
-            boolean active=i==5?erase:(!erase && selected==i+1);
-            round(x,top,57,88,13,active?0xFFDFEBD5:0xFFEDF1E5);
-            if(active) { p.setStyle(Paint.Style.STROKE); p.setStrokeWidth(1.4f); p.setColor(0xFF77A781); canvas.drawRoundRect(new RectF(x,top,x+57,top+88),13,13,p); p.setStyle(Paint.Style.FILL); }
-            canvas.save(); canvas.translate(x+28,top+38); canvas.scale(.85f,.85f);
-            if(i<4) building(i+1,0,0,1);
-            else if(i==4) { diamond(0,0,30,16,0xFFD8C69C); line(-8,-1,4,5,0xFFF9F2D9,2); }
-            else { line(-9,3,6,-12,0xFFA18767,4); line(1,-15,11,-5,0xFF798F85,6); }
-            canvas.restore();
-            textCentered(labels[i],x+28,top+59,9.5f,INK,true);
-            textCentered(i==5?"½ цены":Integer.toString(GameState.COST[i+1]),x+28,top+76,10,i==5?MUTED:GREEN,true);
-            hit(x-1,top-2,61,92,()->{inspectR=-1; erase=index==5; if(index<5) selected=index+1;});
+        String[] labels={"Домик","Ферма","Магазин","Парк","Дорога","Рыбак","Снос"};
+        int[] kinds={GameState.HOUSE,GameState.FARM,GameState.SHOP,GameState.PARK,GameState.ROAD,GameState.FISH,-1};
+        for(int i=0;i<7;i++) {
+            final int kind=kinds[i];float x=12+i*54,top=y+64;
+            boolean active=kind==-1?erase:(!erase&&selected==kind);
+            round(x,top,49,88,12,active?0xFFDFEBD5:0xFFEDF1E5);
+            if(active) {p.setStyle(Paint.Style.STROKE);p.setStrokeWidth(1.4f);p.setColor(0xFF77A781);canvas.drawRoundRect(new RectF(x,top,x+49,top+88),12,12,p);p.setStyle(Paint.Style.FILL);}
+            canvas.save();canvas.translate(x+24.5f,top+38);canvas.scale(.8f,.8f);
+            if(GameState.isBuilding(kind))building(kind,0,0,1);
+            else if(kind==GameState.ROAD){diamond(0,0,30,16,0xFFD8C69C);line(-8,-1,4,5,0xFFF9F2D9,2);}
+            else {line(-9,3,6,-12,0xFFA18767,4);line(1,-15,11,-5,0xFF798F85,6);}
+            canvas.restore();textCentered(labels[i],x+24.5f,top+59,9,INK,true);
+            textCentered(kind==-1?"½ цены":Integer.toString(GameState.COST[kind]),x+24.5f,top+76,10,kind==-1?MUTED:GREEN,true);
+            hit(x,top-2,49,92,()->{inspectR=NO_SELECTION;erase=kind==-1;if(kind!=-1)selected=kind;});
         }
         textCentered(erase?"Дороги и река защищены от сноса":toolHint(),200,y+172,9.5f,MUTED,false);
     }
@@ -406,18 +469,19 @@ public final class GameView extends View {
             case 2:return "+4 еды за цикл · кормит 4 домика";
             case 3:return "+9 монет за цикл · больше уютных витрин";
             case 4:return "+9 к настроению · можно сажать где угодно";
+            case GameState.FISH:return "+4 еды за цикл · только у реки · дорога не нужна";
             default:return "Соединяйте участки: зданиям нужна дорога";
         }
     }
     private void inspector(float y) {
-        int kind=s.tiles[inspectR][inspectC], level=s.levels[inspectR][inspectC];
+        int kind=s.tile(inspectR,inspectC), level=s.level(inspectR,inspectC);
         canvas.save(); canvas.translate(48,y+70); building(kind,0,0,level); canvas.restore();
         text(GameState.NAMES[kind],80,y+39,20,INK,true);
         text("УРОВЕНЬ "+level+" ИЗ 3",81,y+57,9,GREEN,true);
-        String detail=kind==1?(level*4)+" жителя · +"+(level*5)+" монет за цикл":kind==2?"Урожай: +"+(level*4)+" еды за цикл":kind==3?"Выручка: +"+(level*9)+" монет за цикл":"Настроение: +"+(level*9);
+        String detail=kind==1?(level*4)+" жителя · +"+(level*5)+" монет за цикл":(kind==2||kind==GameState.FISH)?"Еда: +"+(level*4)+" еды за цикл":kind==3?"Выручка: +"+(level*9)+" монет за цикл":"Настроение: +"+(level*9);
         text(detail,81,y+76,10.5f,MUTED,false);
         round(343,y+20,40,40,12,0xFFE7EDDF); text("×",356,y+47,23,MUTED,false);
-        hit(339,y+14,49,49,()->inspectR=-1);
+        hit(339,y+14,49,49,()->inspectR=NO_SELECTION);
         if(level<3) {
             int cost=s.upgradeCost(inspectR,inspectC);
             round(18,y+95,364,48,14,s.coins>=cost?GREEN:0xFF9EAEA0);
@@ -432,7 +496,7 @@ public final class GameView extends View {
         // Remove all underlying controls from input routing.
         hits.clear();
         p.setColor(0x99304E48); canvas.drawRect(0,0,400,height,p);
-        float h=modal==1?435:modal==2?358:235, top=(height-h)/2;
+        float h=modal==1?435:modal==2?358:modal==4?286:235, top=(height-h)/2;
         round(20,top,360,h,25,CREAM);
         if(modal==1) {
             circle(200,top+57,31,0xFFDEECD5);
@@ -460,14 +524,28 @@ public final class GameView extends View {
             round(42,top+264,316,46,14,GREEN); textCentered("Продолжить",200,top+293,14,Color.WHITE,true);
             hit(42,top+264,316,46,()->modal=0);
             textCentered("Пока приложение закрыто, город отдыхает",200,top+335,10,MUTED,false);
-        } else {
+        } else if(modal==3) {
             textCentered("Начать с чистого острова?",200,top+44,19,INK,true);
             textCentered("Текущий город будет удалён.",200,top+77,12,MUTED,false);
             textCentered("Это действие нельзя отменить.",200,top+98,12,MUTED,false);
             round(42,top+123,316,44,13,0xFFB87860); textCentered("Да, новый город",200,top+151,14,Color.WHITE,true);
-            hit(42,top+123,316,44,()->{boolean sound=s.sound;s=new GameState();s.sound=sound;inspectR=-1;erase=false;selected=1;phase=0;particles.clear();camera.reset();saveCamera();save();modal=0;message("Новый остров ждёт ваших идей");});
+            hit(42,top+123,316,44,()->{boolean sound=s.sound;s=new GameState();s.sound=sound;inspectR=NO_SELECTION;erase=false;selected=1;phase=0;particles.clear();expanding=false;camera.reset();saveCamera();save();modal=0;message("Новый остров ждёт ваших идей");});
             round(42,top+178,316,37,12,0xFFE5EBDD); textCentered("Оставить мой город",200,top+202,13,GREEN,true);
             hit(42,top+178,316,37,()->modal=2);
+        } else if(selectedPlot!=null) {
+            textCentered("Больше места для идей",200,top+43,21,INK,true);
+            textCentered("Участок 4×4 · 16 новых клеток",200,top+76,13,GREEN,true);
+            textCentered("Можно строить сразу после покупки",200,top+101,11,MUTED,false);
+            textCentered(s.coins<s.landCost()?"Не хватает "+(s.landCost()-s.coins)+" монет":"Следующие участки будут чуть дороже",200,top+125,10,s.coins<s.landCost()?0xFFB87958:MUTED,false);
+            round(42,top+149,316,47,14,s.coins>=s.landCost()?GREEN:0xFF9EAEA0);
+            textCentered("Купить · "+s.landCost()+" монет",200,top+179,14,Color.WHITE,true);
+            hit(42,top+149,316,47,()->{
+                String error=s.buyPlot(selectedPlot.r,selectedPlot.c);
+                if(error!=null)message(error);
+                else {sound();save();modal=0;selectedPlot=null;message("Участок куплен! Ещё 16 клеток для вашего города");}
+            });
+            round(42,top+209,316,43,12,0xFFE5EBDD);textCentered("Пока не покупать",200,top+236,13,GREEN,true);
+            hit(42,top+209,316,43,()->{modal=0;selectedPlot=null;});
         }
     }
     private void guideRow(float y,String number,String title,String subtitle) {
@@ -479,30 +557,34 @@ public final class GameView extends View {
         float screenX=x,screenY=y,centerY=originY+4*tileH;
         int c=Math.round(camera.column(x-200,y-centerY,tileW,tileH));
         int r=Math.round(camera.row(x-200,y-centerY,tileW,tileH));
+        if(expanding) {
+            for(GameState.Plot plot:s.availablePlots())if(plot.contains(r,c)) {selectedPlot=plot;modal=4;return;}
+            message("Выберите участок 4×4 с плюсом у края города");return;
+        }
         x=200+(x-200-camera.panX)/camera.zoom;
         y=centerY+(y-centerY-camera.panY)/camera.zoom;
         // Roofs extend beyond their plots. Pick the frontmost visible building first.
         boolean found=false;
         sortTiles();
-        for(int i=80;i>=0 && !found;i--) {
-            int rr=drawOrder[i]/9,cc=drawOrder[i]%9;
-            int k=s.tiles[rr][cc]; if(k<1||k>4)continue;
-            float unit=tileW/38, tall=(k==1?32+(s.levels[rr][cc]-1)*10:k==3?39+(s.levels[rr][cc]-1)*8:34)*unit;
+        for(int i=tileCount-1;i>=0 && !found;i--) {
+            int rr=row(drawOrder[i]),cc=col(drawOrder[i]);
+            int k=s.tile(rr,cc); if(!GameState.isBuilding(k))continue;
+            float unit=tileW/38, tall=(k==1?32+(s.level(rr,cc)-1)*10:k==3?39+(s.level(rr,cc)-1)*8:k==GameState.FISH?29+(s.level(rr,cc)-1)*5:34)*unit;
             if(x>=tx(rr,cc)-14*unit && x<=tx(rr,cc)+14*unit && y>=ty(rr,cc)-tall && y<=ty(rr,cc)+3*unit) {
                 r=rr;c=cc;found=true;break;
             }
         }
-        if(!s.valid(r,c)) { if(inspectR>=0)inspectR=-1; return; }
-        int kind=s.tiles[r][c];
+        if(!s.valid(r,c)) { if(inspectR!=NO_SELECTION)inspectR=NO_SELECTION; return; }
+        int kind=s.tile(r,c);
         if(erase) {
             String error=s.demolish(r,c);
             if(error!=null)message(error);else{sound();save();burst(screenX,screenY);message("Участок свободен. Часть монет возвращена");}
-        } else if(kind>=GameState.HOUSE && kind<=GameState.PARK) { inspectR=r;inspectC=c; }
+        } else if(GameState.isBuilding(kind)) { inspectR=r;inspectC=c; }
         else if(kind==GameState.EMPTY) {
             String error=s.build(r,c,selected);
-            if(error!=null)message(error);else{inspectR=-1;sound();save();burstTile(r,c);}
+            if(error!=null)message(error);else{inspectR=NO_SELECTION;sound();save();burstTile(r,c);}
         } else if(kind==GameState.WATER) message("По реке плывёт кораблик. Здесь строить нельзя");
-        else {inspectR=-1;message("Дорога соединяет город. Стройте рядом с ней");}
+        else {inspectR=NO_SELECTION;message("Дорога соединяет город. Стройте рядом с ней");}
     }
     @Override public boolean onTouchEvent(MotionEvent event) {
         float x=event.getX()/scale,y=(event.getY()-insetTop)/scale;
